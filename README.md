@@ -17,7 +17,7 @@ O repositório de referência é um catálogo, não um serviço universal de inf
 
 A migração v0.7.3 reaproveita as credenciais do cofre criptografado. Se o catálogo salvo já contém `openrouter/free` confirmado como gratuito, configura momentos e títulos para o roteador, preservando tarefas vinculadas a outros provedores e guardando as escolhas anteriores. A migração executa uma vez e não realiza inferência. Seleções gratuitas antigas mantêm a proteção caso o catálogo mude de preço. Conexões oficiais do OpenRouter registradas como personalizadas são normalizadas.
 
-Se a conexão ainda não tiver o roteador no catálogo salvo, clique em **Atualizar catálogo** e **Usar automático gratuito**. Conectar uma chave nova tem essa configuração marcada por padrão; pode ser desmarcada. Os modelos pagos continuam consultáveis com rótulo explícito, mediante seleção manual.
+Se uma conexão antiga ainda não tiver o roteador no catálogo salvo, a atualização consulta uma vez o catálogo público atual, sem enviar a chave e sem fazer inferência, e prepara o roteador quando ele estiver disponível. Se essa consulta estiver indisponível, use **Atualizar catálogo** e **Usar automático gratuito**. Conectar uma chave nova tem essa configuração marcada por padrão; pode ser desmarcada. Os modelos pagos continuam consultáveis com rótulo explícito, mediante seleção manual.
 
 ### Como verificar
 

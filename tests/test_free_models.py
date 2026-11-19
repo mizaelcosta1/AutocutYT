@@ -353,3 +353,86 @@ def test_new_custom_openrouter_with_https_port_uses_authenticated_discovery(api)
     assert KEY not in response.text
     assert api.client.post(f'/api/ai/providers/{provider["id"]}/free-defaults').status_code == 200
     assert integrations.get_selected(api.vault)["free_only"] is True
+
+
+def test_saved_catalog_backfill_uses_one_anonymous_request_and_preserves_connections(api):
+    first_id = api.seed([FREE])
+    second_key = "second-synthetic-openrouter-credential"
+    second_id = api.seed([PAID], provider_id="second-openrouter", key=second_key)
+    custom_id = api.seed([{"id": "custom-chat"}], provider_id="custom-provider", kind="custom", key="custom-test-key")
+    state = api.vault.read()
+    custom_selection = {"provider_id": custom_id, "model_id": "custom-chat"}
+    state["selected"] = {
+        "moments": custom_selection,
+        "titles": {"provider_id": first_id, "model_id": FREE["id"]},
+    }
+    original_custom = state["providers"][custom_id]
+    api.vault.save(state)
+
+    def respond(request):
+        assert request.method == "GET" and str(request.url) == OPENROUTER_BASE + "/models"
+        assert "authorization" not in request.headers
+        assert KEY not in str(request.url) and second_key not in str(request.url)
+        return httpx.Response(200, json={"data": [ROUTER, FREE, PAID]})
+
+    api.respond(respond)
+    report = integrations.refresh_saved_free_catalog(api.vault)
+    assert report["catalogues_refreshed"] == 2 and report["tasks_configured"] == ["titles"]
+    assert len(api.requests) == 1
+    refreshed = api.vault.read()
+    assert refreshed["free_catalog_backfill"] == 1
+    assert refreshed["providers"][first_id]["api_key"] == KEY
+    assert refreshed["providers"][second_id]["api_key"] == second_key
+    assert refreshed["providers"][custom_id] == original_custom
+    assert refreshed["selected"]["moments"] == custom_selection
+    assert refreshed["selected"]["titles"] == {
+        "provider_id": first_id, "model_id": OPENROUTER_FREE_ROUTER, "free_only": True,
+    }
+    assert all(OPENROUTER_FREE_ROUTER in {model["id"] for model in refreshed["providers"][provider_id]["models"]}
+               for provider_id in (first_id, second_id))
+    assert integrations.refresh_saved_free_catalog(api.vault) == {"checked": False}
+    assert len(api.requests) == 1
+
+
+def test_saved_catalog_backfill_without_targets_finishes_without_network(api):
+    report = integrations.refresh_saved_free_catalog(api.vault)
+    assert report == {
+        "checked": True, "saved_connections": 0, "openrouter_connections": 0,
+        "catalogues_refreshed": 0, "tasks_configured": [],
+    }
+    assert api.vault.read()["free_catalog_backfill"] == 1
+    assert not api.requests
+    assert integrations.refresh_saved_free_catalog(api.vault) == {"checked": False}
+    assert not api.requests
+
+
+def test_failed_saved_catalog_backfill_preserves_state_and_can_retry(api, monkeypatch):
+    provider_id = api.seed([FREE])
+    state = api.vault.read()
+    state["selected"]["titles"] = {"provider_id": provider_id, "model_id": FREE["id"], "free_only": True}
+    api.vault.save(state)
+    original_state = api.vault.read()
+    original_ciphertext = api.vault.path.read_bytes()
+    attempts = []
+
+    def remote_get(url, key=""):
+        attempts.append((url, key))
+        if len(attempts) == 1:
+            raise ValueError("Synthetic unavailable catalogue")
+        return {"data": [ROUTER, FREE]}
+
+    monkeypatch.setattr(integrations, "remote_get", remote_get)
+    failed = integrations.refresh_saved_free_catalog(api.vault)
+    assert failed["catalogues_refreshed"] == 0 and failed["catalogue_status"]
+    assert api.vault.read() == original_state
+    assert api.vault.path.read_bytes() == original_ciphertext
+    assert "free_catalog_backfill" not in api.vault.read()
+
+    retried = integrations.refresh_saved_free_catalog(api.vault)
+    assert retried["catalogues_refreshed"] == 1
+    assert retried["tasks_configured"] == ["moments", "titles"]
+    assert attempts == [(OPENROUTER_BASE + "/models", "")] * 2
+    assert api.vault.read()["free_catalog_backfill"] == 1
+    assert api.vault.read()["providers"][provider_id]["api_key"] == KEY
+    assert integrations.get_selected(api.vault, "titles")["model_id"] == OPENROUTER_FREE_ROUTER
+    assert not api.requests

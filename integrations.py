@@ -279,6 +279,47 @@ def migrate_free_defaults(vault: Vault) -> dict:
         return {"migrated": True, "tasks_configured": sorted(set(applied))}
 
 
+def refresh_saved_free_catalog(vault: Vault) -> dict:
+    """Backfill old OpenRouter catalogues once, without sending any API key.
+
+    A saved catalogue may predate the free router, so metadata-only migration
+    cannot configure it. Fetch the current public catalogue only in that case.
+    No inference, account change or credential validation happens at startup.
+    """
+    with vault.lock:
+        state = vault.read()
+        if state.get("free_catalog_backfill") == 1:
+            return {"checked": False}
+        providers = [p for p in state.get("providers", {}).values()
+                     if p.get("kind") == "openrouter" and p.get("endpoint") == OPENROUTER_BASE]
+        targets = [p["id"] for p in providers if not _free_router(p)]
+        report = {"checked": True, "saved_connections": len(state.get("providers", {})),
+                  "openrouter_connections": len(providers), "catalogues_refreshed": 0, "tasks_configured": []}
+        if not targets:
+            state["free_catalog_backfill"] = 1
+            vault.save(state)
+            return report
+    try:
+        models = normalize_models(remote_get(OPENROUTER_BASE + "/models"), "openrouter")
+    except ValueError:
+        return report | {"catalogue_status": "unavailable; refresh from Connections"}
+    with vault.lock:
+        state = vault.read()
+        for provider_id in targets:
+            provider = state.get("providers", {}).get(provider_id)
+            if not provider or provider.get("endpoint") != OPENROUTER_BASE:
+                continue
+            provider["models"] = models
+            provider["updated_at"] = utc()
+            report["catalogues_refreshed"] += 1
+            if _free_router(provider):
+                report["tasks_configured"].extend(_apply_free_defaults(state, provider, preserve_other_providers=True))
+        state["free_catalog_backfill"] = 1
+        vault.save(state)
+    report["tasks_configured"] = sorted(set(report["tasks_configured"]))
+    return report
+
+
 def public_provider(entry: dict) -> dict:
     models = _models(entry)
     return {k: entry.get(k) for k in ("id", "kind", "name", "endpoint", "preset_id", "created_at", "updated_at")} | {

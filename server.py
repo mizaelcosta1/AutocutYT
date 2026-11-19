@@ -35,7 +35,7 @@ import studio_auth
 import logging
 from source_detect import detect_source_kind
 from integrations import (Vault, build_router, generate_clip_metadata, get_selected, migrate_free_defaults,
-                          rerank_remote, upload_youtube_video)
+                          refresh_saved_free_catalog, rerank_remote, upload_youtube_video)
 from ai_runtime import ModelRequestError
 
 APP_VERSION = "0.7.3"
@@ -59,10 +59,13 @@ PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None)
 CONNECTION_VAULT = Vault(ROOT)
 FREE_MODELS_UPGRADE = migrate_free_defaults(CONNECTION_VAULT)
+FREE_CATALOG_REFRESH = refresh_saved_free_catalog(CONNECTION_VAULT)
 if FREE_MODELS_UPGRADE.get("migrated"):
     logging.getLogger("uvicorn.error").info(
         "AI free-mode upgrade completed; configured tasks: %s",
         ", ".join(FREE_MODELS_UPGRADE.get("tasks_configured", [])) or "none")
+if FREE_CATALOG_REFRESH.get("checked"):
+    logging.getLogger("uvicorn.error").info("AI public-catalog upgrade: %s", FREE_CATALOG_REFRESH)
 app.include_router(studio_auth.router)
 app.include_router(build_router(CONNECTION_VAULT))
 

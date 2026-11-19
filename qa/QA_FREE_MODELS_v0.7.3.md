@@ -17,9 +17,9 @@ Data: 19/11/2026 (America/Sao_Paulo). Base revisada: `51bc986e82b80f0800638e8299
 
 | Verificação | Resultado |
 | --- | --- |
-| `python -m pytest -q` | 122 passaram, 1 ignorado |
+| `python -m pytest -q` | 125 passaram, 1 ignorado |
 | Testes novos de metadados do catálogo | 55 passaram |
-| Testes novos de integração, custo e migração | 16 passaram |
+| Testes novos de integração, custo e migração | 19 passaram |
 | Testes do JavaScript com DOM simulado | 10 passaram |
 | Sintaxe de `app.js`, `connections.js`, `timeline.js` | Aprovada |
 | Compilação Python dos módulos alterados | Aprovada |
@@ -40,7 +40,9 @@ NODE_PATH=/tmp/autoclips-dom-qa/node_modules node --test qa/test_connections_dom
 python -m pytest -q
 ```
 
-**Isso não é validação visual em navegador.** O navegador conectado à conversa estava indisponível; o navegador de nuvem não alcançou o servidor loopback local (`ERR_CONNECTION_REFUSED`), e a inspeção da aba de erro foi recusada pela política de URL/protocolo. Não se tentou contornar a política. Não há novos prints autenticados de Conexões nesta rodada, nem promessa de teste visual concluído.
+**Isso não é validação visual em navegador.** O navegador conectado à conversa estava indisponível; o navegador de nuvem não alcançou o servidor loopback local (`ERR_CONNECTION_REFUSED`), e a inspeção da aba de erro foi recusada pela política de URL/protocolo. Não se tentou contornar a política. Após a publicação, o navegador acessou a página pública de login do Studio e registrou um print real. Não há novos prints autenticados de Conexões nesta rodada, nem promessa de teste visual completo concluído.
+
+O primeiro deployment passou no healthcheck, mas a migração baseada apenas no catálogo salvo não registrou tarefas configuradas. Foi acrescentada a atualização única de catálogos antigos: um GET público sem chave pode atualizar todas as conexões OpenRouter elegíveis, preservar credenciais e preparar o roteador. Três regressões adicionais confirmam o caso antigo, ausência de alvos sem rede e falha recuperável sem alterar o cofre. Essa etapa não executa inferência.
 
 `qa/connections_fixture.py` permanece como ambiente local reproduzível, com chave fictícia e upstream simulado, identificado por faixa de QA. Não é importado pelo servidor de produção e não utiliza a conta real.
 
