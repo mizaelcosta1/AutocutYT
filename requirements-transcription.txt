@@ -1,0 +1,3 @@
+# CPU inference; the Docker build also caches the multilingual tiny model.
+faster-whisper==1.2.1
+

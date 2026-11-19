@@ -37,8 +37,11 @@ from source_detect import detect_source_kind
 from integrations import (Vault, build_router, generate_clip_metadata, get_selected, migrate_free_defaults,
                           refresh_saved_free_catalog, rerank_remote, upload_youtube_video)
 from ai_runtime import ModelRequestError
+from subtitles import SubtitleStyle, normalize_subtitle_style, generate_vtt
+from transcription import default_model_name
+from live_preview import start_capture, preview_directory, preview_status, resolve_preview_asset, cleanup_preview
 
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.7.4"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -54,6 +57,9 @@ LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autoclips")
 LIVE: dict[str, dict] = {}
 PENDING_PUBLISH: set[tuple[str, str]] = set()
+PROCESSING_VIDEOS: set[str] = set()
+RENDERING: set[tuple[str, str]] = set()
+TASK_CONTEXT = threading.local()
 PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 
 app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None)
@@ -178,6 +184,20 @@ def task_info(task_id: str):
         return TASKS.get(task_id)
 
 
+def task_progress(progress: dict) -> None:
+    """Expose useful stages to the UI without a write for every decoded word."""
+    task_id = getattr(TASK_CONTEXT, "task_id", None)
+    with LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return
+        task.update({k: v for k, v in progress.items() if k in {"phase", "progress", "message"}})
+        now = time.monotonic()
+        if now - getattr(TASK_CONTEXT, "last_save", 0) >= 1 or progress.get("progress") == 100:
+            _save_tasks()
+            TASK_CONTEXT.last_save = now
+
+
 def schedule(kind: str, fn, *args, **kwargs) -> str:
     task_id = uuid.uuid4().hex
     with LOCK:
@@ -185,6 +205,7 @@ def schedule(kind: str, fn, *args, **kwargs) -> str:
         _save_tasks()
 
     def do_work():
+        TASK_CONTEXT.task_id = task_id
         with LOCK:
             TASKS[task_id]["status"] = "running"
             _save_tasks()
@@ -198,6 +219,8 @@ def schedule(kind: str, fn, *args, **kwargs) -> str:
             with LOCK:
                 TASKS[task_id].update(status="done", result=result, ended_at=utcnow())
                 _save_tasks()
+        finally:
+            TASK_CONTEXT.task_id = None
 
     POOL.submit(do_work)
     return task_id
@@ -250,6 +273,7 @@ class RenderRequest(BaseModel):
     clip_id: str
     layout: str = "blur"
     subtitles: bool = False
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     approved_selection: bool = False
     approved_preview: bool = False
 
@@ -258,7 +282,7 @@ class LiveStart(BaseModel):
     url: str
     authorized: bool
     analyze_after: bool = True
-    transcribe_after: bool = False
+    transcribe_after: bool = True
     auto_preview: bool = False
 
 
@@ -275,6 +299,7 @@ class AutoSourceRequest(BaseModel):
     authorized: bool
     analyze_after: bool = True
     auto_preview: bool = True
+    transcribe_after: bool = True
 
 
 class PublishYouTubeRequest(BaseModel):
@@ -298,7 +323,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
@@ -317,6 +342,8 @@ def config():
         "streamlink": bool(shutil.which("streamlink")),
         "ytdlp": bool(shutil.which("yt-dlp")),
         "transcribe_available": has_whisper,
+        "transcription_model": default_model_name(),
+        "live_preview_available": bool(shutil.which("ffmpeg")) and bool(shutil.which("streamlink")),
         "ai_titles_ready": get_selected(CONNECTION_VAULT, "titles") is not None,
         "chunksize": CHUNK_SIZE,
         "upload_limit": None,
@@ -411,6 +438,126 @@ def _transcript_document(video_id: str) -> dict:
     return {"words": [], "engine": "none"}
 
 
+def _transcript_signature(video_id: str) -> str:
+    document = _transcript_document(video_id)
+    return hashlib.sha256(json.dumps(document.get("words", []), sort_keys=True,
+                                    ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def _subtitle_style(video_id: str) -> dict:
+    return normalize_subtitle_style(read_json(_project_folder(video_id) / "subtitle_style.json", {}))
+
+
+@app.get("/api/videos/{video_id}/subtitle-style")
+def get_subtitle_style(video_id: str):
+    return {"subtitle_style": _subtitle_style(video_id)}
+
+
+@app.put("/api/videos/{video_id}/subtitle-style")
+def save_subtitle_style(video_id: str, style: SubtitleStyle):
+    with LOCK:
+        folder = _project_folder(video_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        write_json(folder / "subtitle_style.json", style.model_dump())
+    return {"subtitle_style": style.model_dump()}
+
+
+def _update_video(video_id: str, **changes) -> dict:
+    with LOCK:
+        item = video_info(video_id)
+        item.update(changes)
+        save_video(item)
+        return item
+
+
+def _schedule_video(kind: str, video_id: str, fn) -> str:
+    with LOCK:
+        if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
+                or any(key[0] == video_id for key in PENDING_PUBLISH)):
+            raise HTTPException(409, "Este vídeo está em processamento. Aguarde a tarefa terminar.")
+        PROCESSING_VIDEOS.add(video_id)
+    def work():
+        try:
+            return fn()
+        finally:
+            with LOCK:
+                PROCESSING_VIDEOS.discard(video_id)
+    try:
+        return schedule(kind, work)
+    except Exception:
+        with LOCK:
+            PROCESSING_VIDEOS.discard(video_id)
+        raise
+
+
+def _transcribe_for_video(video_id: str, *, force: bool = False) -> dict:
+    """One transcript is shared by the simple editor and the timeline."""
+    existing = _transcript_document(video_id)
+    if not force and existing.get("engine", "none") != "none":
+        return existing
+    source = Path(video_info(video_id)["path"])
+    folder = _project_folder(video_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    _update_video(video_id, transcription={"status": "running", "message": "Preparando transcrição."})
+    try:
+        result = transcript_local(source, progress=task_progress)
+        with LOCK:
+            write_json(folder / "transcript.json", result)
+            # Refresh the shared analysis document too, so metadata and existing
+            # clip suggestions always use the newly generated words.
+            item = video_info(video_id)
+            if item.get("job_path"):
+                work = Path(item["job_path"])
+                write_json(work / "transcript.json", result)
+                manifest = read_json(work / "manifest.json", None)
+                if manifest:
+                    manifest["transcription_engine"] = result["engine"]
+                    for clip in manifest.get("clips", []):
+                        clip["excerpt"] = " ".join(w["text"] for w in result.get("words", [])
+                                                  if clip["start"] <= w["start"] < clip["end"])
+                    write_json(work / "manifest.json", manifest)
+            _update_video(video_id, transcription={"status": "done", "words": len(result.get("words", [])),
+                          "engine": result["engine"], "message": result.get("notice", "Legendas disponíveis."),
+                          "updated_at": utcnow()})
+        return result
+    except Exception as exc:
+        _update_video(video_id, transcription={"status": "error", "message": str(exc)[:300]})
+        raise
+
+
+def _prepare_recorded_video(video_id: str, *, analyze_after: bool, transcribe_after: bool,
+                            auto_preview: bool) -> dict:
+    outcome = {"video_id": video_id, "previews": 0, "proposals": 0}
+    if transcribe_after:
+        try:
+            transcript = _transcribe_for_video(video_id)
+            outcome["transcription"] = "done"
+            outcome["words"] = len(transcript.get("words", []))
+        except Exception as exc:
+            # Preserve the recording and let the user retry transcription. A
+            # missing audio track must not erase a valid video capture.
+            outcome["transcription"] = "error"
+            outcome["transcription_message"] = str(exc)[:300]
+    if analyze_after:
+        task_progress({"phase": "analyzing", "progress": 0, "message": "Encontrando momentos na gravação."})
+        item = video_info(video_id)
+        transcript_path = _project_folder(video_id) / "transcript.json"
+        result_path = analyze(Path(item["path"]), transcript_path if transcript_path.exists() else None,
+                              None, 5, 40)
+        _update_video(video_id, job_path=str(result_path))
+        clips = read_json(result_path / "manifest.json", {"clips": []})["clips"]
+        outcome["proposals"] = len(clips)
+        if auto_preview:
+            words = _transcript_document(video_id).get("words", [])
+            for i, clip in enumerate(clips[:3]):
+                task_progress({"phase": "rendering", "progress": i * 100 / min(3, len(clips)),
+                               "message": f"Preparando prévia {i + 1} de {min(3, len(clips))}."})
+                has_speech = any(word["start"] < clip["end"] and word["end"] > clip["start"] for word in words)
+                render_one(video_id, clip["id"], "preview", "blur", has_speech, _subtitle_style(video_id))
+                outcome["previews"] += 1
+    return outcome
+
+
 @app.get("/studio/{video_id}")
 def studio_timeline_page(video_id: str):
     _project_folder(video_id)
@@ -444,7 +591,9 @@ def edit_video_timeline(video_id: str, req: TimelineEditRequest):
 def get_video_transcript(video_id: str):
     data = _transcript_document(video_id)
     return {"available": bool(data.get("words")), "engine": data.get("engine", "none"),
-            "words": data.get("words", [])}
+            "words": data.get("words", []), "notice": data.get("notice"),
+            "state": video_info(video_id).get("transcription", {}),
+            "subtitle_style": _subtitle_style(video_id)}
 
 
 @app.post("/api/videos/{video_id}/transcript")
@@ -453,33 +602,61 @@ def transcribe_video_locally(video_id: str):
         import faster_whisper  # noqa: F401
     except ImportError as exc:
         raise HTTPException(status_code=503, detail="Instale faster-whisper para transcricao local") from exc
-    source = Path(video_info(video_id)["path"])
-    destination = _project_folder(video_id) / "transcript.json"
     def work():
-        result = transcript_local(source, "small")
-        with LOCK:
-            write_json(destination, result)
-        return {"words": len(result.get("words", [])), "engine": result.get("engine")}
-    return {"task_id": schedule("transcribe-local", work)}
+        result = _transcribe_for_video(video_id, force=True)
+        return {"video_id": video_id, "words": len(result.get("words", [])),
+                "engine": result.get("engine"), "notice": result.get("notice")}
+    video_info(video_id)
+    return {"task_id": _schedule_video("transcribe-local", video_id, work)}
+
+
+@app.get("/api/videos/{video_id}/subtitles.{extension}")
+def download_video_subtitles(video_id: str, extension: str):
+    if extension not in {"srt", "vtt"}:
+        raise HTTPException(404)
+    item = video_info(video_id)
+    words = _transcript_document(video_id).get("words", [])
+    folder = _project_folder(video_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"transcript.{extension}"
+    with LOCK:
+        generate = generate_srt if extension == "srt" else generate_vtt
+        if not generate(words, 0, item["duration"], target):
+            raise HTTPException(404, "Nenhuma fala disponível. Transcreva o vídeo primeiro.")
+    return FileResponse(target, media_type="application/x-subrip" if extension == "srt" else "text/vtt",
+                        filename=f"autoclips-legendas.{extension}", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/videos/{video_id}/timeline.srt")
 def download_timeline_srt(video_id: str):
+    return download_timeline_captions(video_id, "srt")
+
+
+@app.get("/api/videos/{video_id}/timeline.vtt")
+def download_timeline_vtt(video_id: str):
+    return download_timeline_captions(video_id, "vtt")
+
+
+def download_timeline_captions(video_id: str, extension: str):
     with LOCK:
         doc, path = _timeline_document(video_id)
         words = _transcript_document(video_id).get("words", [])
         mapped = rebase_words(doc, words)
         if not mapped:
             raise HTTPException(status_code=404, detail="Transcricao sem palavras nesse corte")
-        file = path.parent / f"timeline-v{doc['version']}.srt"
-        if not generate_srt(mapped, 0, total_duration(doc), file):
+        file = path.parent / f"timeline-v{doc['version']}.{extension}"
+        generate = generate_srt if extension == "srt" else generate_vtt
+        if not generate(mapped, 0, total_duration(doc), file):
             raise HTTPException(status_code=404, detail="Nao foi possivel gerar as legendas")
-    return FileResponse(file, media_type="application/x-subrip", filename=f"autoclips-legendas-v{doc['version']}.srt")
+    return FileResponse(file, media_type="application/x-subrip" if extension == "srt" else "text/vtt",
+                        filename=f"autoclips-legendas-v{doc['version']}.{extension}",
+                        headers={"Cache-Control": "no-store"})
 
 
 class TimelineRenderRequest(BaseModel):
     layout: Literal["blur", "fit", "crop"] = "blur"
     subtitles: bool = False
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     approved_selection: bool = False
     approved_preview: bool = False
 
@@ -492,6 +669,8 @@ def _current_export(video_id: str, quality: str, *, version: int | None = None) 
     if version is not None and rendered.get("version") != version:
         return None
     if not Path(rendered.get("path", "")).is_file():
+        return None
+    if rendered.get("subtitles") and rendered.get("transcript_signature") != _transcript_signature(video_id):
         return None
     return rendered
 
@@ -506,7 +685,9 @@ def video_timeline_exports(video_id: str):
             if meta:
                 out[quality] = {"url": f"/api/videos/{video_id}/timeline/rendered/{quality}",
                                 "version": meta["version"], "layout": meta["layout"],
-                                "subtitles": meta["subtitles"], "probe": meta["probe"]}
+                                "subtitles": meta["subtitles"], "probe": meta["probe"],
+                                "subtitle_style": meta.get("subtitle_style", normalize_subtitle_style()),
+                                "render_id": meta.get("render_id", "")}
         return {"exports": out}
 
 
@@ -522,16 +703,22 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
         doc, folder_path = _timeline_document(video_id)
         source = Path(video_info(video_id)["path"])
         doc_snapshot = json.loads(json.dumps(doc))
+        style = req.subtitle_style.model_dump()
+        signature = _transcript_signature(video_id)
         if quality == "final":
             preview = _current_export(video_id, "preview", version=doc["version"])
-            if not preview or preview["layout"] != req.layout or preview["subtitles"] != req.subtitles:
+            if (not preview or preview["layout"] != req.layout or preview["subtitles"] != req.subtitles
+                    or (req.subtitles and preview.get("subtitle_style") != style)):
                 raise HTTPException(status_code=409, detail="Gere e assista a previa desta versao com estas opcoes")
         words = _transcript_document(video_id).get("words", [])
-        dest = folder_path.parent / "renders" / f"timeline-v{doc['version']}-{quality}-{req.layout}-s{int(req.subtitles)}.mp4"
+        if req.subtitles and not rebase_words(doc, words):
+            raise HTTPException(409, "Transcreva o vídeo e selecione trechos com fala antes de ativar legendas.")
+        render_id = uuid.uuid4().hex[:12]
+        dest = folder_path.parent / "renders" / f"timeline-v{doc['version']}-{quality}-{render_id}.mp4"
 
     def work():
         meta = render_project(source, dest, doc_snapshot, words=words,
-                              quality=quality, layout=req.layout, subtitles=req.subtitles)
+                              quality=quality, layout=req.layout, subtitles=req.subtitles, subtitle_style=style)
         with LOCK:
             current, _ = _timeline_document(video_id)
             if current["version"] != doc_snapshot["version"]:
@@ -539,11 +726,15 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
                 raise ValueError("Timeline mudou durante renderizacao; exportacao descartada")
             exports_file = folder_path.parent / "timeline_exports.json"
             records = read_json(exports_file, {})
+            previous = records.get(quality)
+            meta.update(transcript_signature=signature, render_id=render_id)
             records[quality] = meta
             write_json(exports_file, records)
+            if previous and Path(previous.get("path", "")).is_file():
+                Path(previous["path"]).unlink(missing_ok=True)
         return {"quality": quality, "url": f"/api/videos/{video_id}/timeline/rendered/{quality}"}
 
-    return {"task_id": schedule("timeline-" + quality, work)}
+    return {"task_id": _schedule_video("timeline-" + quality, video_id, work)}
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
@@ -706,18 +897,15 @@ def import_vod(req: VodDownloadRequest):
             "thumbnail": str(thumb) if thumb else None,
         }
         save_video(item)
-        previews = 0
-        if req.analyze_after:
-            model = "small" if req.transcribe_after else None
-            job_path = analyze(downloaded, None, model, 5, 40)
-            item["job_path"] = str(job_path)
-            save_video(item)
-            if req.auto_preview:
-                manifest = read_json(job_path / "manifest.json", {"clips": []})
-                for clip in manifest.get("clips", [])[:3]:
-                    render_one(vid, clip["id"], "preview", "blur", False)
-                    previews += 1
-        return {"video_id": vid, "name": downloaded.name, "previews": previews}
+        with LOCK:
+            PROCESSING_VIDEOS.add(vid)
+        try:
+            result = _prepare_recorded_video(vid, analyze_after=req.analyze_after,
+                                             transcribe_after=req.transcribe_after, auto_preview=req.auto_preview)
+            return {**result, "name": downloaded.name}
+        finally:
+            with LOCK:
+                PROCESSING_VIDEOS.discard(vid)
 
     return {"task_id": schedule("download-vod", job)}
 
@@ -739,6 +927,9 @@ def list_videos():
 @app.delete("/api/videos/{video_id}")
 def delete_video(video_id: str):
     with LOCK:
+        if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
+                or any(key[0] == video_id for key in PENDING_PUBLISH)):
+            raise HTTPException(409, "Aguarde o processamento ou envio terminar antes de excluir o projeto.")
         data = catalog()
         item = data.pop(video_id, None)
         if not item:
@@ -787,16 +978,19 @@ def analyze_video(video_id: str, req: AnalyzeRequest):
         if not selected:
             raise HTTPException(400, "Selecione um modelo para momentos na aba Conexoes")
     source = Path(item["path"])
-    model = "small" if req.transcribe else None
 
     def job():
+        if req.transcribe:
+            _transcribe_for_video(video_id)
+        task_progress({"phase": "analyzing", "progress": 0, "message": "Encontrando os melhores momentos."})
+        transcript_path = _project_folder(video_id) / "transcript.json"
         reranker = (lambda clips: rerank_remote(clips, selected)) if selected else None
-        result_path = analyze(source, None, model, req.clips, req.seconds, req.ollama_model, reranker)
-        item["job_path"] = str(result_path)
-        save_video(item)
+        result_path = analyze(source, transcript_path if transcript_path.exists() else None, None,
+                              req.clips, req.seconds, req.ollama_model, reranker)
+        _update_video(video_id, job_path=str(result_path))
         return {"video_id": video_id, "clips": len(read_json(result_path / "manifest.json", {})["clips"])}
 
-    return {"task_id": schedule("analyze", job)}
+    return {"task_id": _schedule_video("analyze", video_id, job)}
 
 
 def get_manifest(video_id: str) -> tuple[dict, Path, dict]:
@@ -813,12 +1007,18 @@ def get_manifest(video_id: str) -> tuple[dict, Path, dict]:
 @app.get("/api/videos/{video_id}/manifest")
 def show_manifest(video_id: str):
     manifest, _, _ = get_manifest(video_id)
+    signature = _transcript_signature(video_id)
+    def ready(clip, quality):
+        meta = clip.get(quality)
+        return bool(meta) and (not meta.get("burn") or meta.get("transcript_signature") == signature)
     return {"transcription_engine": manifest["transcription_engine"],
             "ranking": manifest["ranking"], "duration": manifest["probe"]["duration"],
             "review_required": manifest.get("review_required", True),
             "clips": [{k: v for k, v in c.items() if k not in {"preview", "final"}} | {
-                "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview" if c.get("preview") else None,
-                "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final" if c.get("final") else None,
+                "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview?v={c.get('preview', {}).get('render_id', '')}" if ready(c, "preview") else None,
+                "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final?v={c.get('final', {}).get('render_id', '')}" if ready(c, "final") else None,
+                "preview_options": {k: c.get("preview", {}).get(k) for k in ("layout", "burn", "subtitle_style")},
+                "final_options": {k: c.get("final", {}).get(k) for k in ("layout", "burn", "subtitle_style")},
             } for c in manifest["clips"]]}
 
 
@@ -900,6 +1100,8 @@ def update_clips(video_id: str, req: UpdateClips):
 @app.delete("/api/videos/{video_id}/clips/{clip_id}")
 def delete_clip(video_id: str, clip_id: str):
     with LOCK:
+        if video_id in PROCESSING_VIDEOS:
+            raise HTTPException(409, "Aguarde o processamento terminar antes de remover este corte.")
         if (video_id, clip_id) in PENDING_PUBLISH:
             raise HTTPException(status_code=409, detail="Aguarde o envio ao YouTube terminar antes de remover")
         manifest, work, _ = get_manifest(video_id)
@@ -952,6 +1154,8 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
     if not req.approved_publish:
         raise HTTPException(status_code=400, detail="Marque a confirmacao explicita antes de publicar no YouTube")
     with LOCK:
+        if video_id in PROCESSING_VIDEOS:
+            raise HTTPException(409, "Aguarde o processamento deste vídeo antes de enviar ao YouTube.")
         manifest, _, _ = get_manifest(video_id)
         clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
         if not clip:
@@ -999,38 +1203,63 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         raise
 
 
-def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: bool) -> dict:
+def _preview_matches(clip: dict, layout: str, burn: bool, style: dict, signature: str) -> bool:
+    preview = clip.get("preview", {})
+    return bool(preview) and preview.get("layout") == layout and preview.get("burn") == burn and (
+        not burn or (preview.get("subtitle_style") == style and preview.get("transcript_signature") == signature))
+
+
+def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: bool,
+               subtitle_style=None) -> dict:
+    style = normalize_subtitle_style(subtitle_style)
     with LOCK:
         manifest, work, _ = get_manifest(video_id)
         selected = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
         if selected is None:
             raise ValueError("Clipe nao existe")
-        if quality == "final" and not selected.get("preview"):
-            raise ValueError("Primeiro assista e aprove a previa")
+        signature = _transcript_signature(video_id)
+        if quality == "final" and not _preview_matches(selected, layout, burn, style, signature):
+            raise ValueError("Gere e aprove uma prévia com estas opções de enquadramento e legenda.")
         clip = selected.copy()
         source = Path(manifest["source"])
         if not source.exists() or sha256_file(source) != manifest["sha256"]:
             raise ValueError("O original foi alterado; analise novamente")
         has_audio = bool(manifest["probe"]["audio_codec"])
-        words = read_json(work / "transcript.json", {"words": []})["words"]
+        words = _transcript_document(video_id).get("words", [])
     folder = work / quality
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / f"{clip_id}.mp4"
-    subs = folder / f"{clip_id}.srt"
+    render_id = uuid.uuid4().hex[:12]
+    dest = folder / f"{clip_id}-{render_id}.mp4"
+    subs = folder / f"{clip_id}-{render_id}.srt"
     if not generate_srt(words, clip["start"], clip["end"], subs):
         subs = None
+    if burn and subs is None:
+        raise ValueError("Este corte não tem falas transcritas. Transcreva o vídeo ou desative as legendas.")
     metadata = render_clip(source, dest, clip, quality=quality, layout=layout,
-                           burn=burn, srt=subs, has_audio=has_audio)
+                           burn=burn, srt=subs, has_audio=has_audio, subtitle_style=style)
     with LOCK:
         manifest, work, _ = get_manifest(video_id)
         current = next(c for c in manifest["clips"] if c["id"] == clip_id)
         if current["start"] != clip["start"] or current["end"] != clip["end"]:
             dest.unlink(missing_ok=True)
             raise ValueError("Intervalo mudou durante renderizacao; tente novamente")
+        stale = [current.get(quality)]
+        if quality == "preview":
+            stale.append(current.pop("final", None))
+            if current.get("youtube"):
+                current.setdefault("youtube_history", []).append(current.pop("youtube"))
         current[quality] = {"path": str(dest), "subtitles": str(subs) if subs else None,
+                            "layout": layout, "burn": burn, "subtitle_style": style,
+                            "transcript_signature": signature, "render_id": render_id,
                             "qa": {"full_decode_ok": True, **metadata}}
         current["status"] = "preview_ready" if quality == "preview" else "final_ready"
         write_json(work / "manifest.json", manifest)
+        for record in stale:
+            if isinstance(record, dict):
+                for key in ("path", "subtitles"):
+                    candidate = Path(record[key]) if record.get(key) else None
+                    if candidate and candidate.is_relative_to(work):
+                        candidate.unlink(missing_ok=True)
     return {"video_id": video_id, "clip_id": clip_id, "quality": quality,
             "url": f"/api/videos/{video_id}/rendered/{clip_id}/{quality}"}
 
@@ -1046,8 +1275,13 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
         raise HTTPException(status_code=400, detail="Aprove a selecao primeiro")
     if quality == "final" and not req.approved_preview:
         raise HTTPException(status_code=400, detail="Aprove a previa primeiro")
-    return {"task_id": schedule("render-" + quality, render_one,
-                                video_id, req.clip_id, quality, req.layout, req.subtitles)}
+    clip = next(c for c in manifest["clips"] if c["id"] == req.clip_id)
+    style = req.subtitle_style.model_dump()
+    if quality == "final" and not _preview_matches(clip, req.layout, req.subtitles, style,
+                                                  _transcript_signature(video_id)):
+        raise HTTPException(409, "Gere e aprove uma prévia com estas opções de enquadramento e legenda.")
+    return {"task_id": _schedule_video("render-" + quality, video_id,
+                lambda: render_one(video_id, req.clip_id, quality, req.layout, req.subtitles, style))}
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")
@@ -1058,6 +1292,8 @@ def view_rendered(video_id: str, clip_id: str, quality: str):
     clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
     if not clip or quality not in clip:
         raise HTTPException(status_code=404)
+    if clip[quality].get("burn") and clip[quality].get("transcript_signature") != _transcript_signature(video_id):
+        raise HTTPException(409, "A transcrição mudou. Gere uma nova prévia com as legendas atuais.")
     return FileResponse(clip[quality]["path"], media_type="video/mp4", filename=f"{clip_id}_{quality}.mp4", content_disposition_type="inline")
 
 
@@ -1083,13 +1319,15 @@ def platform(url: str) -> str:
     raise ValueError("Aceitamos links diretos de Twitch, YouTube e Kick")
 
 
-def watch_live(live_id: str, proc: subprocess.Popen, target: Path, logs):
+def watch_live(live_id: str, proc, target: Path, logs):
     code = proc.wait()
     logs.close()
     with LOCK:
         info = LIVE[live_id]
         info["exit_code"] = code
-        info["status"] = "completed" if code == 0 else "interrupted"
+        info["status"] = "saving"
+        info["bytes"] = target.stat().st_size if target.exists() else 0
+    cleanup_preview(preview_directory(target))
     if not target.exists() or target.stat().st_size < 1024:
         with LOCK:
             info["message"] = "Nenhum video foi gravado"
@@ -1103,7 +1341,9 @@ def watch_live(live_id: str, proc: subprocess.Popen, target: Path, logs):
         except Exception:
             run(["ffmpeg", "-v", "error", "-y", "-i", str(target), "-c", "copy", "-movflags", "+faststart", str(remux)])
         result = remux
+        target.unlink(missing_ok=True)
     except Exception as exc:
+        remux.unlink(missing_ok=True)
         with LOCK:
             info["message"] = f"Remux MP4 indisponivel: {str(exc)[:120]}"
     try:
@@ -1111,7 +1351,7 @@ def watch_live(live_id: str, proc: subprocess.Popen, target: Path, logs):
     except Exception as exc:
         with LOCK:
             info["status"] = "error"
-            info["message"] = f"Gravacao nao abriu: {str(exc)[:160]}"
+            info["message"] = f"O arquivo foi preservado, mas não abriu no editor de vídeo: {str(exc)[:160]}"
         return
     vid = uuid.uuid4().hex
     item = {"id": vid, "name": result.name, "path": str(result),
@@ -1127,22 +1367,41 @@ def watch_live(live_id: str, proc: subprocess.Popen, target: Path, logs):
     save_video(item)
     with LOCK:
         info["video_id"] = vid
-    if info.get("analyze_after"):
-        def auto_analyze():
-            model = "small" if info.get("transcribe_after") else None
-            job_path = analyze(result, None, model, 5, 40)
-            item["job_path"] = str(job_path)
-            save_video(item)
-            proposals = read_json(job_path / "manifest.json", {"clips": []})["clips"]
-            previews = 0
-            if info.get("auto_preview"):
-                for clip in proposals[:3]:
-                    render_one(vid, clip["id"], "preview", "blur", False)
-                    previews += 1
-            return {"video_id": vid, "proposals": len(proposals), "previews": previews}
-        task_id = schedule("analyze-after-live", auto_analyze)
+        info["status"] = "completed"
+        if code != 0 and not info.get("message"):
+            info["message"] = "A captura foi interrompida; o trecho recebido foi salvo."
+    if info.get("analyze_after") or info.get("transcribe_after"):
+        task_id = _schedule_video("prepare-after-live", vid,
+            lambda: _prepare_recorded_video(vid, analyze_after=info.get("analyze_after", False),
+                                           transcribe_after=info.get("transcribe_after", False),
+                                           auto_preview=info.get("auto_preview", False)))
         with LOCK:
             info["analysis_task_id"] = task_id
+
+
+def monitor_live_storage(live_id: str, proc) -> None:
+    """Stop before a recording consumes the space needed to save its metadata."""
+    wake = threading.Event()
+    while proc.poll() is None:
+        with LOCK:
+            # MP4 packaging briefly needs a second copy of every active TS.
+            # Reserve that space before the recorder consumes it.
+            pending_bytes = 0
+            for record in LIVE.values():
+                if record.get("status") in {"starting", "recording", "stopping", "saving"}:
+                    try:
+                        pending_bytes += record["target"].stat().st_size
+                    except FileNotFoundError:
+                        pass
+        if shutil.disk_usage(RECORDINGS).free < pending_bytes + 64 * 1024 * 1024:
+            with LOCK:
+                info = LIVE.get(live_id)
+                if info:
+                    info["message"] = "Gravação encerrada para reservar espaço ao salvamento. Libere espaço antes de gravar novamente."
+                    info["status"] = "stopping"
+            proc.terminate()
+            return
+        wake.wait(5)
 
 
 @app.post("/api/live/start")
@@ -1155,6 +1414,10 @@ def start_live(req: LiveStart):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not shutil.which("streamlink"):
         raise HTTPException(status_code=503, detail="Streamlink nao instalado no computador servidor")
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(503, "O servidor precisa do FFmpeg para gravar e mostrar a prévia.")
+    if shutil.disk_usage(RECORDINGS).free < 80 * 1024 * 1024:
+        raise HTTPException(507, "Há pouco espaço para gravar. Libere espaço na biblioteca e tente novamente.")
     if req.transcribe_after:
         try:
             import faster_whisper  # noqa: F401
@@ -1169,8 +1432,7 @@ def start_live(req: LiveStart):
             raise HTTPException(409, "Esta live ja esta sendo gravada; acompanhe em Lives")
         loghandle = logpath.open("w", encoding="utf-8")
         try:
-            proc = subprocess.Popen(["streamlink", "--retry-streams", "30", "--output", str(target), req.url, "best"],
-                                    stdout=loghandle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            proc = start_capture(req.url, target, loghandle)
         except OSError as exc:
             loghandle.close()
             raise HTTPException(502, "Falha ao iniciar o gravador Streamlink") from exc
@@ -1181,6 +1443,7 @@ def start_live(req: LiveStart):
                          "transcribe_after": req.transcribe_after,
                          "auto_preview": req.auto_preview}
     threading.Thread(target=watch_live, args=(live_id, proc, target, loghandle), daemon=True).start()
+    threading.Thread(target=monitor_live_storage, args=(live_id, proc), daemon=True).start()
     return {"id": live_id, "platform": plat, "status": "starting"}
 
 
@@ -1207,11 +1470,13 @@ def import_source_auto(req: AutoSourceRequest):
     if kind == "live":
         recording = start_live(LiveStart(url=req.url.strip(), authorized=True,
                                          analyze_after=req.analyze_after,
+                                         transcribe_after=req.transcribe_after,
                                          auto_preview=req.auto_preview))
         return {"kind": "live", "live_id": recording["id"],
                 "status": "starting", "message": "Encerre a gravacao para iniciar os cortes"}
     task = import_vod(VodDownloadRequest(url=req.url.strip(), authorized=True,
                                          analyze_after=req.analyze_after,
+                                         transcribe_after=req.transcribe_after,
                                          auto_preview=req.auto_preview))
     return {"kind": "vod", "task_id": task["task_id"]}
 
@@ -1238,8 +1503,34 @@ def list_lives():
             state = info["status"]
             if state == "starting" and recorded > 0:
                 state = "recording"
+            preview = preview_status(preview_directory(info["target"]))
+            analysis = TASKS.get(info.get("analysis_task_id"), {})
+            if state == "completed" and analysis.get("status") in {"queued", "running"}:
+                state = "processing"
             result.append({"id": live_id, "platform": info["platform"], "url": info["url"],
-                           "status": state, "bytes": recorded, "video_id": info.get("video_id"),
+                           "status": state, "bytes": recorded or info.get("bytes", 0), "video_id": info.get("video_id"),
                            "message": info.get("message"),
-                           "analysis_task_id": info.get("analysis_task_id")})
+                           "analysis_task_id": info.get("analysis_task_id"),
+                           "analysis_status": analysis.get("status"),
+                           "analysis_progress": analysis.get("progress", 0),
+                           "analysis_message": analysis.get("error") or
+                               analysis.get("result", {}).get("transcription_message") or
+                               ("Processamento concluído." if analysis.get("status") == "done" else analysis.get("message")),
+                           "preview_url": f"/api/live/{live_id}/preview/index.m3u8",
+                           "preview_ready": preview["ready"] and state in {"starting", "recording", "stopping"},
+                           "preview_has_video": preview.get("has_video"),
+                           "preview_message": preview.get("message")})
     return {"lives": list(reversed(result))}
+
+
+@app.get("/api/live/{live_id}/preview/{asset}")
+def live_preview_asset(live_id: str, asset: str):
+    with LOCK:
+        info = LIVE.get(live_id)
+        if not info:
+            raise HTTPException(404, "Gravação não encontrada.")
+        path = resolve_preview_asset(preview_directory(info["target"]), asset)
+    if path is None:
+        raise HTTPException(404, "Prévia ainda não disponível.")
+    return FileResponse(path, media_type="application/vnd.apple.mpegurl" if asset.endswith(".m3u8") else "video/mp2t",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

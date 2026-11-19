@@ -1,4 +1,40 @@
-# AutoClips AI Studio 0.7.3 — catálogo gratuito e OpenRouter Free
+# AutoClips AI Studio 0.7.4 — transcrição, legendas e prévia da live
+
+A gravação agora pode ser acompanhada por uma prévia da própria captura. Ao encerrar, o vídeo é salvo, transcrito localmente e preparado para cortes e legendas. O editor e a montagem compartilham a transcrição e as preferências de fonte, tamanho e cor.
+
+## Como usar esta versão
+
+1. Em **Novo projeto**, cole a URL em **Gravar uma live** ou use **Importar um link**, que identifica se o conteúdo está ao vivo ou gravado. Confirme o direito de uso.
+2. **Gerar transcrição e legendas** vem marcado. **Sugerir cortes** é independente: é possível transcrever sem pedir cortes automáticos.
+3. Durante a captura, acompanhe **Gravações em andamento**. A prévia mostra o mesmo sinal recebido pelo gravador, com atraso de transmissão. Use os controles do vídeo para ativar o áudio.
+4. Clique em **Encerrar gravação**. A tela informa salvamento, transcrição, busca de momentos e preparação das prévias. O vídeo salvo continua acessível se a transcrição falhar; **Gerar legendas** permite tentar novamente.
+5. No editor, escolha fonte, tamanho (18–96, referência de 1080p) e cor. O contorno escuro é fixo. Use **Baixar SRT** ou **Baixar VTT**, ou marque **Incluir legendas no vídeo** para gravá-las no MP4.
+6. Gere e assista à prévia 720p, aprove-a e exporte o final 1080p. Alterar o estilo, enquadramento ou transcrição exige nova prévia. SRT/VTT são arquivos de texto e tempo; a personalização visual é aplicada ao MP4.
+
+A interface foi reorganizada em ciano, vermelho e azul escuro, com instruções curtas, gravações em uma seção própria e opções técnicas em blocos expansíveis. As decisões estão em [docs/UX_v0.7.4.md](docs/UX_v0.7.4.md).
+
+## Dependências e implantação v0.7.4
+
+O Docker instala FFmpeg, Streamlink, yt-dlp, **faster-whisper 1.2.1** e as cinco famílias de fontes apresentadas no editor (DejaVu, Liberation e Noto). O build baixa o modelo multilíngue **tiny** para `/opt/autoclips-models`, fora do volume de vídeos, e o runtime usa CPU int8 com `AUTOCLIPS_WHISPER_LOCAL_ONLY=1`. A transcrição trabalha com áudio mono a 16 kHz em trechos de 180 s, com contexto nas bordas; apenas um modelo e uma inferência ficam ativos por processo. O áudio não é enviado a um serviço de transcrição externo.
+
+**HLS.js 1.7.4** é servido pelo próprio aplicativo. O build valida a integridade SHA-512 da distribuição npm e guarda sua licença MIT; não depende de CDN no navegador. A captura abre uma única conexão Streamlink e usa FFmpeg para gravar TS e manter uma janela HLS curta, sem reencodificar o sinal. O player preserva a instância entre atualizações, tenta recuperar falhas limitadas e permite repetir somente a prévia.
+
+Para instalação local, além de `requirements.txt`, instale `requirements-transcription.txt`, FFmpeg/ffprobe, yt-dlp, Streamlink e as fontes. Execute `python scripts/prepare_runtime_assets.py --hls-only` para preparar o player. Fora do Docker, o modelo é baixado no primeiro uso, salvo em `AUTOCLIPS_WHISPER_CACHE` (padrão: diretório temporário) e configurável por `AUTOCLIPS_WHISPER_MODEL`.
+
+O armazenamento continua finito. Antes de iniciar e durante a gravação, o servidor verifica espaço; reserva o tamanho das capturas e uma margem de 64 MiB para salvar em MP4. Depois do salvamento, remove TS duplicado e segmentos de prévia. A duração disponível depende da taxa do vídeo e do espaço ocupado por outros projetos.
+
+### Limites e evidência
+
+- Prévia HLS tem atraso de alguns segundos, variável com rede e keyframes; não é uma promessa de latência zero. O navegador precisa suportar o codec da fonte. Uma falha na prévia não encerra a gravação.
+- O editor exige faixa de vídeo. Uma fonte apenas de áudio é identificada e sinalizada; não é apresentada como projeto de vídeo pronto.
+- Reconhecimento automático pode errar nomes e palavras. A amostra visual do navegador pode usar uma fonte substituta; a prévia MP4 usa a fonte instalada no servidor.
+- A geração local e exportação foram verificadas com fala pública real em inglês; a qualidade em português e lives externas não foi medida nessa amostra. Casos YouTube/Twitch/Kick com fontes controladas não equivalem a capturas externas concluídas.
+- A continuidade de uma captura não é garantida durante reinício ou nova implantação do servidor. Tarefas interrompidas são identificadas e gravações já salvas permanecem no volume.
+
+Ver [qa/QA_v0.7.4.md](qa/QA_v0.7.4.md) para testes, evidências e limitações. Referências primárias: [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [HLS.js](https://github.com/video-dev/hls.js), [FFmpeg HLS e tee](https://www.ffmpeg.org/ffmpeg-formats.html), [Streamlink CLI](https://streamlink.github.io/cli.html).
+
+## Histórico v0.7.3 — catálogo gratuito e OpenRouter Free
+
 
 Em **Conexões e modelos**, o catálogo agora distingue modelos gratuitos, pagos e de preço não informado. O filtro e a busca são aplicados antes da paginação: o limite antigo de 250 opções não esconde mais os modelos gratuitos. A lista completa vem da API do provedor, sem manter uma lista fixa de IDs antigos.
 
@@ -25,7 +61,7 @@ Se uma conexão antiga ainda não tiver o roteador no catálogo salvo, a atualiz
 2. Confira **Somente gratuitos** e **Automático · somente gratuitos (openrouter/free)**.
 3. Clique em **Usar automático gratuito** e confira as tarefas momentos e títulos.
 4. Clique em **Testar IA gratuita**. Uma resposta real depende da validade da chave, das cotas e da disponibilidade do OpenRouter.
-5. No editor, a avaliação semântica de momentos continua exigindo transcrição e autorização de envio. A instalação de transcrição local permanece opcional. Sem transcrição, o título usa a sugestão local, identificada como tal.
+5. No editor, a avaliação semântica de momentos continua exigindo transcrição e autorização de envio. Na v0.7.3, a instalação de transcrição local era opcional; a imagem v0.7.4 já inclui o recurso. Sem transcrição, o título usa a sugestão local, identificada como tal.
 
 Nenhuma dependência de produção foi acrescentada. A integração usa `httpx` e o cofre já existentes; classificação de preços usa `decimal` da biblioteca padrão. A etapa de revisão foi retirada do seletor porque ainda não executa uma ação no editor.
 

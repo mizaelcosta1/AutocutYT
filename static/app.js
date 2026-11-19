@@ -6,7 +6,11 @@
     manifest: null,
     selectedFile: null,
     youtubeCanUpload: false,
+    transcript: null,
+    completedAnalysisSeen: null,
   };
+  let styleSaveTimer = null;
+  let styleSavePromise = Promise.resolve();
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -86,7 +90,9 @@
       if (t.status === "error" || t.status === "interrupted") {
         throw new Error(t.error || "Tarefa interrompida");
       }
-      if (onProgressText) onProgressText(`Processando (${t.kind})...`);
+      if (onProgressText) onProgressText(t.message
+        ? `${t.message}${Number(t.progress) > 0 && t.status === "running" ? ` ${Math.round(t.progress)}%` : ""}`
+        : t.status === "queued" ? "Aguardando na fila..." : "Processando no servidor...");
     }
   }
 
@@ -94,32 +100,39 @@
     try {
       const cfg = await api("/api/config");
       state.config = cfg;
+      ["#live-transcribe", "#vod-transcribe", "#transcribe"].forEach((selector) => {
+        const input = $(selector);
+        if (!input) return;
+        input.disabled = !cfg.transcribe_available;
+        if (!cfg.transcribe_available) input.checked = false;
+      });
+      if ($("#btn-transcribe")) $("#btn-transcribe").disabled = !cfg.transcribe_available || state.transcript?.state?.status === "running";
       $$(".c-gen-meta").forEach((btn) => { btn.textContent = cfg.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"; });
       const transcribeCheckbox = $("#transcribe");
       const cloudCheckbox = $("#cloud-model");
       if (transcribeCheckbox && !cfg.transcribe_available) {
         transcribeCheckbox.checked = false;
         transcribeCheckbox.disabled = true;
-        transcribeCheckbox.title = "faster-whisper nao instalado no servidor";
+        transcribeCheckbox.title = "O recurso de transcrição não está disponível neste servidor.";
         if (cloudCheckbox) { cloudCheckbox.checked = false; cloudCheckbox.disabled = true; }
-        $("#analysis-note").textContent = "Transcricao local indisponivel neste servidor (faster-whisper nao instalado). A analise usa picos de audio; nao envia nada para a nuvem.";
+        $("#analysis-note").textContent = "Transcrição indisponível neste servidor. As sugestões usarão variações do áudio.";
       }
       const freeStr = fmtBytes(cfg.storage_free_bytes);
       const storageEl = $("#storage-info");
       if (storageEl) {
-        storageEl.textContent = `Espaco livre no volume: ${freeStr} • FFmpeg ${cfg.ffmpeg ? "OK" : "Ausente"}`;
+        storageEl.textContent = `${freeStr} livres para vídeos e exportações`;
       }
       const liveCap = $("#live-capability");
       if (liveCap) {
         liveCap.textContent = cfg.streamlink
-          ? "Streamlink pronto no servidor para Twitch, YouTube e Kick."
-          : "Streamlink nao detectado no servidor (necessario para lives).";
+          ? "Capture YouTube, Twitch ou Kick e acompanhe a prévia. A transcrição começa ao encerrar."
+          : "A gravação de lives está indisponível neste servidor.";
       }
       const vodCap = $("#vod-capability");
       if (vodCap) {
         vodCap.textContent = cfg.ytdlp
-          ? "yt-dlp pronto no servidor; baixa em MP4 pronto para edicao."
-          : "yt-dlp nao detectado no servidor.";
+          ? "Vídeos gravados são importados. Se a live estiver no ar, a gravação começa e você acompanha a prévia abaixo."
+          : "A importação por link está indisponível neste servidor.";
       }
     } catch (err) {
       console.error(err);
@@ -212,7 +225,8 @@
     try {
       const started = await api("/api/source/auto", {
         method: "POST",
-        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter, auto_preview: analyzeAfter }),
+        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter, auto_preview: analyzeAfter,
+          transcribe_after: Boolean($("#vod-transcribe")?.checked) }),
       });
       $("#vod-url").value = "";
       if (started.kind === "live") {
@@ -221,7 +235,8 @@
       } else {
         showNotice("VOD identificado. Baixando e preparando cortes de revisão...", "info");
         const res = await pollTask(started.task_id, (txt) => (btn.textContent = txt));
-        showNotice(`VOD importado: ${res.name}. Prévia(s): ${res.previews || 0}`, "ok");
+        showNotice(res.transcription === "error" ? `Vídeo salvo. Transcrição pendente: ${res.transcription_message}`
+          : `Vídeo importado. ${res.previews || 0} prévia(s) pronta(s) para revisar.`, res.transcription === "error" ? "error" : "ok");
         await loadLibrary();
         const video = state.videos.find((v) => v.id === res.video_id);
         if (video) openEditor(video);
@@ -230,7 +245,7 @@
       showNotice(err.message, "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "Identificar e preparar cortes <span>&rarr;</span>";
+      btn.textContent = "Importar link";
     }
   });
 
@@ -240,31 +255,19 @@
       const box = $("#lives-list");
       if (!box) return;
       if (!data.lives?.length) {
-        box.innerHTML = "";
+        if (window.AutoClipsLive) window.AutoClipsLive.refresh([]);
         return;
       }
-      box.innerHTML = data.lives
-        .slice(0, 4)
-        .map(
-          (l) => `
-          <div class="file-label" style="margin-top:10px">
-            <b>[${escapeHtml(l.platform.toUpperCase())}]</b> ${escapeHtml(l.status)} • ${fmtBytes(l.bytes)}
-            ${l.message ? `<div class="hint">${escapeHtml(l.message)}</div>` : ""}
-            <div class="btn-row" style="margin-top:6px">
-              ${
-                l.status === "recording" || l.status === "starting"
-                  ? `<button class="danger" onclick="window._stopLive('${l.id}')">Encerrar gravacao</button>`
-                  : ""
-              }
-              ${
-                l.video_id
-                  ? `<button class="outline" onclick="window._openVideoById('${l.video_id}')">Abrir gravacao</button>`
-                  : ""
-              }
-            </div>
-          </div>`
-        )
-        .join("");
+      if (window.AutoClipsLive) window.AutoClipsLive.refresh(data.lives);
+      const currentLive = data.lives.find((live) => live.video_id === state.currentVideo?.id && live.analysis_task_id);
+      if (currentLive) {
+        await loadTranscript();
+        const completedKey = `${currentLive.analysis_task_id}:${currentLive.analysis_status}`;
+        if (["done", "error", "interrupted"].includes(currentLive.analysis_status) && state.completedAnalysisSeen !== completedKey) {
+          state.completedAnalysisSeen = completedKey;
+          await loadManifest();
+        }
+      }
     } catch (_) {}
   }
 
@@ -284,16 +287,23 @@
     const analyzeAfter = $("#live-auto").checked;
     if (!url) return showNotice("Cole o link da live.", "error");
     if (!authorized) return showNotice("Confirme que tem autorizacao para gravar esta live.", "error");
+    const btn = $("#btn-live");
+    btn.disabled = true;
+    btn.textContent = "Iniciando gravação...";
     try {
       await api("/api/live/start", {
         method: "POST",
-        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter }),
+        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter,
+          transcribe_after: Boolean($("#live-transcribe")?.checked), auto_preview: analyzeAfter }),
       });
       showNotice("Captura solicitada. Confira o status em Lives.", "ok");
       $("#live-url").value = "";
       loadLives();
     } catch (err) {
       showNotice(err.message, "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "● Gravar live";
     }
   });
 
@@ -331,7 +341,8 @@
     }
   }
 
-  window._openVideoById = (id) => {
+  window._openVideoById = async (id) => {
+    if (!state.videos.some((x) => x.id === id)) await loadLibrary();
     const v = state.videos.find((x) => x.id === id);
     if (v) openEditor(v);
   };
@@ -370,6 +381,133 @@
   const startSlider = $("#start-slider");
   const endSlider = $("#end-slider");
 
+  function subtitleStyle() {
+    return { font_family: $("#subtitle-font").value, font_size: Number($("#subtitle-size").value),
+      color: $("#subtitle-color").value.toUpperCase() };
+  }
+
+  function validSubtitleStyle() {
+    const size = subtitleStyle().font_size;
+    const valid = Number.isInteger(size) && size >= 18 && size <= 96;
+    $("#subtitle-size").setCustomValidity(valid ? "" : "Escolha um tamanho inteiro entre 18 e 96.");
+    return valid;
+  }
+
+  function updateSubtitleSample() {
+    const style = subtitleStyle();
+    const sample = $("#subtitle-sample");
+    if (!sample) return;
+    sample.style.fontFamily = `"${style.font_family}", sans-serif`;
+    sample.style.color = style.color;
+    sample.style.fontSize = `${Math.max(9, Math.min(48, style.font_size / 2 || 28))}px`;
+  }
+
+  function optionsMatch(options) {
+    if (!options || options.layout !== $("#layout").value || options.burn !== $("#burn-subs").checked) return false;
+    if (!options.burn) return true;
+    const style = subtitleStyle();
+    return options.subtitle_style && ["font_family", "font_size", "color"].every((k) => options.subtitle_style[k] === style[k]);
+  }
+
+  function updateClipApprovals(reset = false) {
+    $$(".clip-card").forEach((card) => {
+      const clip = state.manifest?.clips.find((item) => item.id === card.dataset.clipId);
+      const matching = Boolean(clip?.preview_url) && optionsMatch(clip?.preview_options);
+      const approval = card.querySelector(".c-preview-approve");
+      if (approval) { if (reset || !matching) approval.checked = false; approval.disabled = !matching; }
+      const final = card.querySelector(".c-render-final");
+      if (final) final.disabled = !matching || !approval?.checked;
+      const note = card.querySelector(".c-preview-settings-note");
+      if (note) note.classList.toggle("hidden", matching || !clip?.preview_url);
+      const publish = card.querySelector(".yt-publish-box");
+      if (publish) publish.classList.toggle("hidden", !optionsMatch(clip?.final_options));
+    });
+  }
+
+  function persistSubtitleStyle() {
+    clearTimeout(styleSaveTimer);
+    styleSaveTimer = null;
+    if (!state.currentVideo || !validSubtitleStyle()) return Promise.resolve();
+    const id = state.currentVideo.id;
+    const style = subtitleStyle();
+    styleSavePromise = styleSavePromise.catch(() => {}).then(() => api(`/api/videos/${id}/subtitle-style`, {
+      method: "PUT", body: JSON.stringify(style),
+    }));
+    return styleSavePromise;
+  }
+
+  async function loadTranscript(restoreStyle = false) {
+    if (!state.currentVideo) return;
+    const id = state.currentVideo.id;
+    try {
+      const result = await api(`/api/videos/${id}/transcript`);
+      if (state.currentVideo?.id !== id) return;
+      if (!state.transcript?.available && result.available) $("#burn-subs").checked = true;
+      state.transcript = result;
+      if (restoreStyle && result.subtitle_style) {
+        $("#subtitle-font").value = result.subtitle_style.font_family;
+        $("#subtitle-size").value = result.subtitle_style.font_size;
+        $("#subtitle-color").value = result.subtitle_style.color;
+        updateSubtitleSample();
+      }
+      $("#subtitle-status").textContent = result.state?.status === "running" ? "Transcrição em andamento no servidor..."
+        : result.available ? `${result.words.length} palavras transcritas. Revise as legendas na prévia antes de exportar.`
+        : result.state?.status === "error" ? `A gravação está salva. ${result.state.message}`
+        : result.notice || "Gere legendas a partir do áudio deste vídeo.";
+      $("#btn-transcribe").disabled = result.state?.status === "running" || state.config?.transcribe_available === false;
+      $("#btn-transcribe").textContent = result.available ? "Refazer transcrição" : "Gerar legendas";
+      for (const ext of ["srt", "vtt"]) {
+        const link = $(`#subtitle-download-${ext}`);
+        link.classList.toggle("hidden", !result.available);
+        link.href = `/api/videos/${id}/subtitles.${ext}`;
+      }
+      $("#burn-subs").disabled = !result.available;
+      if (!result.available) $("#burn-subs").checked = false;
+    } catch (error) {
+      if (state.currentVideo?.id === id) $("#subtitle-status").textContent = error.message;
+    }
+  }
+
+  for (const selector of ["#subtitle-font", "#subtitle-size", "#subtitle-color"]) {
+    $(selector)?.addEventListener("input", () => {
+      updateSubtitleSample();
+      updateClipApprovals(true);
+      clearTimeout(styleSaveTimer);
+      if (validSubtitleStyle()) styleSaveTimer = setTimeout(() => {
+        persistSubtitleStyle().catch((error) => showNotice(`Não foi possível salvar o estilo: ${error.message}`, "error"));
+      }, 350);
+    });
+  }
+  for (const selector of ["#layout", "#burn-subs"]) $(selector)?.addEventListener("change", () => updateClipApprovals(true));
+  $("#cloud-model")?.addEventListener("change", () => $("#cloud-approval-line")?.classList.toggle("hidden", !$("#cloud-model").checked));
+  $("#cloud-approval-line")?.classList.toggle("hidden", !$("#cloud-model")?.checked);
+
+  $("#btn-transcribe")?.addEventListener("click", async () => {
+    if (!state.currentVideo) return;
+    const id = state.currentVideo.id;
+    const button = $("#btn-transcribe");
+    button.disabled = true;
+    button.textContent = "Iniciando transcrição...";
+    try {
+      const started = await api(`/api/videos/${id}/transcript`, { method: "POST", body: "{}" });
+      const result = await pollTask(started.task_id, (message) => {
+        if (state.currentVideo?.id === id) $("#subtitle-status").textContent = message;
+      });
+      if (state.currentVideo?.id === id) {
+        await loadTranscript();
+        $("#burn-subs").checked = Boolean(state.transcript?.available);
+        await loadManifest();
+      }
+      showNotice(result.notice || "Transcrição concluída. Você já pode baixar ou incluir as legendas no vídeo.", "ok");
+    } catch (error) { showNotice(error.message, "error"); }
+    finally {
+      if (state.currentVideo?.id === id) {
+        button.disabled = state.config?.transcribe_available === false;
+        button.textContent = state.transcript?.available ? "Refazer transcrição" : "Gerar legendas";
+      }
+    }
+  });
+
   function syncTimelineUI() {
     const dur = Math.max(1, Number(state.currentVideo?.duration) || 30);
     let s = Math.max(0, Math.min(dur - 0.5, Number(startInput.value) || 0));
@@ -406,7 +544,11 @@
   });
 
   async function openEditor(video) {
+    if (styleSaveTimer) await persistSubtitleStyle().catch((error) => showNotice(error.message, "error"));
+    await styleSavePromise.catch(() => {});
     state.currentVideo = video;
+    state.transcript = null;
+    state.completedAnalysisSeen = null;
     const advanced = $("#btn-advanced-timeline");
     if (advanced) advanced.disabled = false;
     switchTab("editor");
@@ -420,6 +562,9 @@
     startInput.value = 0;
     endInput.value = Math.min(dur, 30).toFixed(1);
     syncTimelineUI();
+    await loadTranscript(true);
+    if (state.currentVideo?.id !== video.id) return;
+    $("#burn-subs").checked = Boolean(state.transcript?.available);
     await loadManifest();
   }
 
@@ -468,12 +613,13 @@
       });
       await pollTask(started.task_id, (txt) => (btn.textContent = txt));
       showNotice("Analise concluida! Confira os momentos sugeridos abaixo.", "ok");
+      await loadTranscript();
       await loadManifest();
     } catch (err) {
       showNotice(err.message, "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "&#10022; Buscar melhores momentos";
+      btn.textContent = "Encontrar momentos";
     }
   });
 
@@ -481,11 +627,14 @@
 
   async function loadManifest() {
     if (!state.currentVideo) return;
+    const id = state.currentVideo.id;
     try {
-      const m = await api(`/api/videos/${state.currentVideo.id}/manifest`);
+      const m = await api(`/api/videos/${id}/manifest`);
+      if (state.currentVideo?.id !== id) return;
       state.manifest = m;
       renderClipsList(m.clips || []);
     } catch (_) {
+      if (state.currentVideo?.id !== id) return;
       state.manifest = { clips: [] };
       renderClipsList([]);
     }
@@ -527,6 +676,7 @@
               }
               <button class="danger" onclick="window._deleteClip('${c.id}')">Remover</button>
             </div>
+            <p class="hint c-preview-settings-note hidden">O estilo ou enquadramento mudou. Gere uma nova prévia para revisar essas opções.</p>
             ${
               c.final_url
                 ? `<div class="yt-publish-box">
@@ -568,6 +718,7 @@
         </article>`
       )
       .join("");
+    updateClipApprovals();
   }
 
   window._previewJump = (startSec) => {
@@ -618,15 +769,13 @@
   };
 
   window._approveClipPreview = (clipId) => {
-    const card = document.querySelector(`.clip-card[data-clip-id="${clipId}"]`);
-    if (!card) return;
-    const approved = Boolean(card.querySelector(".c-preview-approve")?.checked);
-    const finalButton = card.querySelector(".c-render-final");
-    if (finalButton) finalButton.disabled = !approved;
+    updateClipApprovals();
   };
 
   window._renderClip = async (clipId, quality) => {
     if (!state.currentVideo) return;
+    const videoId = state.currentVideo.id;
+    if (!validSubtitleStyle()) { $("#subtitle-size").reportValidity(); return; }
     const card = document.querySelector(`.clip-card[data-clip-id="${clipId}"]`);
     const approvedPreview = Boolean(card?.querySelector(".c-preview-approve")?.checked);
     if (quality === "final" && !approvedPreview) {
@@ -634,14 +783,18 @@
     }
     // Never render the OLD interval after a failed attempt to save edits.
     if (!await window._saveAllClips()) return;
+    if (state.currentVideo?.id !== videoId) return;
     try {
+      await persistSubtitleStyle();
+      if (state.currentVideo?.id !== videoId) return;
       showNotice(`Renderizando ${quality === "preview" ? "previa 720p" : "final 1080p"}...`, "info");
-      const started = await api(`/api/videos/${state.currentVideo.id}/render/${quality}`, {
+      const started = await api(`/api/videos/${videoId}/render/${quality}`, {
         method: "POST",
         body: JSON.stringify({
           clip_id: clipId,
           layout: $("#layout").value,
           subtitles: $("#burn-subs").checked,
+          subtitle_style: subtitleStyle(),
           approved_selection: true,
           approved_preview: quality === "final" && approvedPreview,
         }),
@@ -697,6 +850,7 @@
   };
 
   loadConfig();
+  updateSubtitleSample();
   loadLibrary();
   loadLives();
   setInterval(loadLives, 8000);

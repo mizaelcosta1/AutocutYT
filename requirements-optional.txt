@@ -1,2 +1,2 @@
-# Transcription happens locally and downloads a Whisper model on first use.
-faster-whisper
+# For local installations. Production installs this and caches the model in Docker.
+-r requirements-transcription.txt

@@ -90,7 +90,7 @@ def verify_identity(raw, client_id):
 
 
 def login_html(configured_ok):
-    content = '''<h1>AutoClips AI Studio</h1><p>Edite vídeos e conecte seu canal com segurança.</p>'''
+    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.4</div><h1>AutoClips AI Studio</h1><p>Da live ao clipe, com transcrição, legendas e uma prévia para revisar cada detalhe.</p>'''
     if configured_ok:
         content += '<a class="button" href="/login/google">Entrar com Google</a>'
     else:
@@ -98,7 +98,10 @@ def login_html(configured_ok):
                     '<code>AUTOCLIPS_GOOGLE_CLIENT_ID</code>, <code>AUTOCLIPS_GOOGLE_CLIENT_SECRET</code>, '
                     '<code>AUTOCLIPS_SESSION_SECRET</code>, <code>AUTOCLIPS_ALLOWED_EMAILS</code> e '
                     '<code>AUTOCLIPS_PUBLIC_URL</code>. Depois, cadastre o URI de retorno no Google Cloud.</p>')
-    return '''<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar | AutoClips AI Studio</title><style>body{background:#0d1020;color:#f7f7ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh;margin:0}main{width:min(460px,calc(100vw - 52px));padding:32px;border:1px solid #3a3f57;border-radius:20px;background:#171b2d}h1{font-size:28px}p{color:#b9c0d4;line-height:1.5}.button{display:block;background:#fafafa;border-radius:12px;padding:16px;text-align:center;color:#181818;text-decoration:none;font-weight:700;margin-top:26px}code{overflow-wrap:anywhere;color:#8fcaff}</style></head><body><main>''' + content + '</main></body></html>'
+    return '''<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar | AutoClips AI Studio</title><style>
+*{box-sizing:border-box}body{background:#08121d;color:#eff7fc;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100svh;margin:0;padding:24px;background-image:radial-gradient(ellipse at 15% 5%,#42d5e714,transparent 50%),radial-gradient(ellipse at 90% 90%,#fb62720b,transparent 50%)}
+main{width:min(460px,100%);padding:clamp(24px,5vw,40px);border:1px solid #2b4255;border-radius:22px;background:#102030;box-shadow:0 24px 80px #0003}.brand-mark{font-size:38px;color:#42d5e7;font-weight:850;letter-spacing:-3px;margin-bottom:28px}.brand-mark span{font-size:32px;color:#fb6272;margin-left:4px}.eyebrow{font-size:11px;letter-spacing:.14em;color:#a9bbca;font-weight:700}h1{font-size:clamp(25px,5vw,30px);letter-spacing:-.035em;line-height:1.2;margin:12px 0}h2{font-size:20px}p{color:#a9bbca;line-height:1.65}.button{display:block;background:#42d5e7;border-radius:12px;padding:16px;text-align:center;color:#06222c;text-decoration:none;font-weight:750;margin-top:28px;min-height:48px}.button:hover{background:#78e7f3}.button:focus-visible{outline:3px solid #fb6272;outline-offset:4px}code{overflow-wrap:anywhere;color:#78e7f3}
+</style></head><body><main>''' + content + '</main></body></html>'
 
 
 @router.get('/login')

@@ -3,20 +3,29 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8765 \
-    AUTOCLIPS_DATA_ROOT=/data/autoclips
+    AUTOCLIPS_DATA_ROOT=/data/autoclips \
+    AUTOCLIPS_WHISPER_MODEL=tiny \
+    AUTOCLIPS_WHISPER_CACHE=/opt/autoclips-models \
+    AUTOCLIPS_WHISPER_THREADS=2 \
+    AUTOCLIPS_WHISPER_LOCAL_ONLY=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     curl \
     fonts-dejavu-core \
+    fonts-liberation \
+    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY requirements.txt requirements-transcription.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-transcription.txt \
     && pip install --no-cache-dir yt-dlp streamlink
+
+COPY scripts/prepare_runtime_assets.py scripts/prepare_runtime_assets.py
+RUN python scripts/prepare_runtime_assets.py
 
 COPY . .
 

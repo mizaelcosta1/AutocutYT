@@ -19,3 +19,6 @@ recordings/
 *.ts
 *.log
 .DS_Store
+# Downloaded with pinned integrity during the image build; not a CDN dependency.
+/static/hls.min.js
+/static/hls.LICENSE.txt

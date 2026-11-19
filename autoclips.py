@@ -23,6 +23,8 @@ import unicodedata
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from subtitles import fmt_srt, generate_srt, generate_vtt, prepared_ass
+
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".ts", ".m4v"}
 CUE_WEIGHTS = {
     "olha isso": 4, "nao acredito": 5, "meu deus": 5, "que isso": 3,
@@ -113,21 +115,11 @@ def load_words(obj: dict, duration: float) -> list[dict]:
     return out
 
 
-def transcript_local(src: Path, model_name: str) -> dict:
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as ex:
-        raise RuntimeError("Para transcricao local: pip install faster-whisper (requer download do modelo).") from ex
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(str(src), language="pt", word_timestamps=True,
-                                      vad_filter=True, beam_size=5)
-    words = []
-    for seg in segments:
-        if seg.words:
-            words.extend({"start": round(w.start, 3), "end": round(w.end, 3), "text": w.word}
-                         for w in seg.words if w.end > w.start)
-    return {"words": words, "engine": f"faster-whisper/{model_name}",
-            "language": getattr(info, "language", "pt"), "timestamp_confidence": "lower-than-human-reviewed"}
+def transcript_local(src: Path, model_name: str | None = None, *,
+                     language: str | None = None, progress=None) -> dict:
+    """Compatibility entry point for the bounded-memory local transcriber."""
+    from transcription import transcribe_local
+    return transcribe_local(src, model_name, language=language, progress=progress)
 
 
 def audio_rms_by_second(src: Path, max_seconds: int | None = None) -> list[float]:
@@ -304,6 +296,10 @@ def analyze(src: Path, transcript_json: Path | None, model_name: str | None,
         transcript_data.setdefault("engine", "user-supplied")
     elif transcript_path.exists():
         transcript_data = json.loads(transcript_path.read_text(encoding="utf-8"))
+        # An audio-only analysis stores a placeholder. Enabling transcription
+        # later must replace it rather than silently keep captions disabled.
+        if model_name and transcript_data.get("engine") == "none":
+            transcript_data = transcript_local(src, model_name)
     elif model_name:
         transcript_data = transcript_local(src, model_name)
     else:
@@ -334,42 +330,14 @@ def analyze(src: Path, transcript_json: Path | None, model_name: str | None,
     return job
 
 
-def fmt_srt(t: float) -> str:
-    total_ms = max(0, int(round(t * 1000)))
-    hours, rest = divmod(total_ms, 3600000)
-    mins, rest = divmod(rest, 60000)
-    sec, milli = divmod(rest, 1000)
-    return f"{hours:02d}:{mins:02d}:{sec:02d},{milli:03d}"
-
-
-def generate_srt(words: list[dict], start: float, end: float, filename: Path) -> bool:
-    chosen = [w for w in words if w["start"] >= start and w["end"] <= end]
-    if not chosen:
-        return False
-    blocks = []
-    buf = []
-    for w in chosen:
-        if buf and (len(buf) >= 3 or buf[-1]["text"].endswith(("!", "?")) or
-                    w["end"] - buf[0]["start"] > 2.6 or
-                    sum(len(x["text"]) for x in buf) + len(w["text"]) > 27):
-            blocks.append(buf)
-            buf = []
-        buf.append(w)
-    if buf:
-        blocks.append(buf)
-    text_blocks = []
-    for i, block in enumerate(blocks, 1):
-        s = max(0, block[0]["start"] - start)
-        e = max(s + .05, block[-1]["end"] - start)
-        line = " ".join(w["text"] for w in block)
-        text_blocks.append(f"{i}\n{fmt_srt(s)} --> {fmt_srt(e)}\n{line}\n")
-    filename.write_text("\n".join(text_blocks) + "\n", encoding="utf-8")
-    return True
-
-
 def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
-                layout: str, burn: bool, srt: Path | None, has_audio: bool) -> dict:
+                layout: str, burn: bool, srt: Path | None, has_audio: bool,
+                subtitle_style=None) -> dict:
     require_executables("ffmpeg", "ffprobe")
+    if quality not in {"preview", "final"} or layout not in {"blur", "fit", "crop"}:
+        raise ValueError("Configuracao de render invalida")
+    src, dst = Path(src).resolve(), Path(dst).resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
     width, height = (720, 1280) if quality == "preview" else (1080, 1920)
     if layout == "crop":
         graph = (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -383,25 +351,22 @@ def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
                  f"crop={width}:{height},boxblur=12:2[bg];"
                  f"[original_fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
                  f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[base]")
-    if burn and srt is not None:
-        font_size = 16 if quality == "preview" else 19
-        safe_srt = srt.name.replace("'", r"\'")
-        graph += (f";[base]subtitles=filename='{safe_srt}':"
-                  f"force_style='FontName=DejaVu Sans,FontSize={font_size},"
-                  "Outline=2,Shadow=1,Alignment=2,MarginV=45'[v]")
-    else:
-        graph += ";[base]null[v]"
-    duration = max(.1, clip["end"] - clip["start"])
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-           "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
-           "-filter_complex", graph, "-map", "[v]"]
-    if has_audio:
-        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
-    else:
-        cmd += ["-an"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
-    run(cmd, cwd=dst.parent)
+    with prepared_ass(srt if burn else None, dst.parent, subtitle_style) as ass_name:
+        if ass_name:
+            graph += f";[base]ass=filename='{ass_name}':original_size=1080x1920[v]"
+        else:
+            graph += ";[base]null[v]"
+        duration = max(.1, clip["end"] - clip["start"])
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+               "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
+               "-filter_complex", graph, "-map", "[v]"]
+        if has_audio:
+            cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
+        else:
+            cmd += ["-an"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
+        run(cmd, cwd=dst.parent)
     meta = probe(dst)
     if meta["width"] != width or meta["height"] != height:
         raise RuntimeError("Resolucao divergente em " + str(dst))

@@ -98,10 +98,8 @@ def test_chunked_upload_and_manual_preview(tmp_path, monkeypatch):
     manifest=client.get(f"/api/videos/{vid['id']}/manifest").json()
     assert manifest['clips'][0]['preview_url'] is None
     assert manifest['clips'][0]['final_url'] is None
-    assert client.post(f"/api/videos/{vid['id']}/render/final",json={'clip_id':'clip_01','approved_preview':True}).status_code==200
-    # Task will be rejected because no preview remains.
-    # Verify API worker reaches error status rather than falsely reporting a final.
-    # Do not wait for a full final render here.
+    assert client.post(f"/api/videos/{vid['id']}/render/final",json={'clip_id':'clip_01','approved_preview':True}).status_code==409
+    # Reject stale approval synchronously before scheduling an expensive render.
 
 
 def test_upload_resume_and_incomplete_rejected(tmp_path, monkeypatch):

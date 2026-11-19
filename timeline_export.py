@@ -9,11 +9,12 @@ from pathlib import Path
 import tempfile
 
 from autoclips import generate_srt, probe, render_clip, run, sha256_file
+from subtitles import normalize_subtitle_style
 from timeline import total_duration
 
 
 def render_project(source: Path, destination: Path, document: dict, *, words: list[dict],
-                   quality: str, layout: str, subtitles: bool) -> dict:
+                   quality: str, layout: str, subtitles: bool, subtitle_style=None) -> dict:
     if quality not in {"preview", "final"} or layout not in {"blur", "fit", "crop"}:
         raise ValueError("Configuracao de render invalida")
     source = Path(source)
@@ -27,6 +28,7 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
     if not 1 <= len(document["segments"]) <= 80:
         raise ValueError("Numero de segmentos invalido")
     has_audio = bool(info["audio_codec"])
+    subtitle_style = normalize_subtitle_style(subtitle_style)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="autoclips-parts-", dir=str(destination.parent)) as temp_name:
@@ -39,7 +41,8 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
             render_clip(source, part,
                         {"start": segment["source_in"], "end": segment["source_out"]},
                         quality=quality, layout=layout, burn=bool(has_subs),
-                        srt=srt if has_subs else None, has_audio=has_audio)
+                        srt=srt if has_subs else None, has_audio=has_audio,
+                        subtitle_style=subtitle_style)
             parts.append(part.name)
         concat_file = temp / "concat.txt"
         concat_file.write_text("".join(f"file '{name}'\n" for name in parts), encoding="utf-8")
@@ -58,5 +61,6 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
         run(["ffmpeg", "-v", "error", "-xerror", "-i", str(pending), "-f", "null", "-"], timeout=180)
         pending.replace(destination)
     return {"version": document["version"], "quality": quality, "layout": layout,
-            "subtitles": subtitles, "source_sha256": document["source_sha256"],
+            "subtitles": subtitles, "subtitle_style": subtitle_style,
+            "source_sha256": document["source_sha256"],
             "path": str(destination), "probe": rendered}

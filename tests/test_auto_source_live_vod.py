@@ -66,7 +66,7 @@ def test_source_import_archived_live_creates_real_720p_previews(tmp_path,monkeyp
     monkeypatch.setattr(app,'download_vod',lambda url,folder: original)
     client = TestClient(app.app)
     response=client.post('/api/source/auto',json={'url':URL,'authorized':True,
-                                   'analyze_after':True,'auto_preview':True})
+                                   'analyze_after':True,'auto_preview':True,'transcribe_after':False})
     assert response.status_code == 200,response.text
     assert response.json()['kind']=='vod'
     outcome=wait(client,response.json()['task_id'])
@@ -93,14 +93,15 @@ def test_source_import_active_live_invokes_stream_recording_not_ytdlp_download(t
     class FakeProc:
         def __init__(self,*a,**k):called.append((a,k))
         def poll(self):return None
-    monkeypatch.setattr(app.subprocess,'Popen',FakeProc)
+    monkeypatch.setattr(app,'start_capture',FakeProc)
     monkeypatch.setattr(app.threading,'Thread',lambda **kwargs:SimpleNamespace(start=lambda:None))
     response=TestClient(app.app).post('/api/source/auto',json={'url':URL,'authorized':True,
-                                               'analyze_after':True,'auto_preview':True})
+                                               'analyze_after':True,'auto_preview':True,'transcribe_after':False})
     assert response.status_code==200,response.text
     assert response.json()['kind']=='live'
     assert response.json()['live_id']
-    assert called and 'streamlink' in called[0][0][0]
+    assert called and called[0][0][0] == URL
+    assert called[0][0][1].suffix == '.ts'
     assert app.LIVE[response.json()['live_id']]['auto_preview'] is True
 
 
@@ -121,10 +122,10 @@ def test_repeated_start_does_not_duplicate_active_stream_recording(tmp_path,monk
     class FakeProc:
         def __init__(self,*args,**kwargs): called.append(args)
         def poll(self):return None
-    monkeypatch.setattr(app.subprocess,'Popen',FakeProc)
+    monkeypatch.setattr(app,'start_capture',FakeProc)
     monkeypatch.setattr(app.threading,'Thread',lambda **kwargs:SimpleNamespace(start=lambda:None))
     client=TestClient(app.app)
-    data={'url':URL,'authorized':True,'analyze_after':True}
+    data={'url':URL,'authorized':True,'analyze_after':True,'transcribe_after':False}
     first=client.post('/api/live/start',json=data)
     assert first.status_code==200,first.text
     repeated=client.post('/api/live/start',json=data)

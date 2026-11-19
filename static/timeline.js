@@ -3,10 +3,24 @@
   const match = location.pathname.match(/^\/studio\/([0-9a-f]{32})$/);
   const videoId = match && match[1];
   const $ = (selector) => document.querySelector(selector);
+  const defaultStyle = {font_family:"DejaVu Sans", font_size:56, color:"#FFFFFF"};
+  const supportedFonts = new Set(Array.from($("#subtitle-font").options, (option) => option.value));
   const state = { timeline: null, duration: 0, selectedId: null, words: [], transcriptEngine: "none",
-    canUndo: false, canRedo: false, exports: {}, playing: false, playIndex: 0 };
+    canUndo: false, canRedo: false, exports: {}, playing: false, playIndex: 0,
+    transcribeAvailable: false, transcribing: false, transcriptState: {}, transcriptNotice: "",
+    rendering: null, styleLoaded: false, savedStyle: null };
   const video = $("#source-player");
   let toastTimer = null;
+  let styleSaveTimer = null, styleSavePromise = null, styleRevision = 0;
+  let transcriptRequest = 0, exportsRequest = 0, transcriptRefreshTimer = null;
+  const styleStatus = document.createElement("p");
+  styleStatus.id = "subtitle-save-status";
+  styleStatus.className = "hint";
+  styleStatus.setAttribute("role", "status");
+  styleStatus.setAttribute("aria-live", "polite");
+  $("#subtitle-style-help").after(styleStatus);
+  const styleInputs = [$("#subtitle-font"), $("#subtitle-size"), $("#subtitle-color")];
+  styleInputs.forEach((input) => input.disabled = true);
 
   function notice(message, kind = "info") {
     const el = $("#notice");
@@ -43,16 +57,97 @@
     if (busy) { button.dataset.oldText = button.textContent; button.disabled = true; button.textContent = label; }
     else { button.textContent = button.dataset.oldText || button.textContent; button.disabled = false; }
   }
+  function taskMessage(task) {
+    const phases = {queued:"Na fila", waiting:"Aguardando o transcritor", running:"Processando",
+      loading_model:"Preparando a transcrição", transcribing:"Transcrevendo as falas",
+      extracting_audio:"Preparando o áudio", rendering:"Gerando o vídeo", done:"Concluído"};
+    const message = task.message || phases[task.phase] || phases[task.status] || "Processando";
+    const progress = Number(task.progress);
+    return task.progress !== undefined && task.progress !== null && Number.isFinite(progress)
+      ? `${message} · ${Math.round(Math.max(0, Math.min(100, progress)))}%` : message;
+  }
   async function pollTask(taskId, onProgress = null) {
-    const deadline = Date.now() + 20 * 60 * 1000;
+    // Long recordings can take hours on a CPU. A polling limit is not a job failure.
+    const deadline = Date.now() + 12 * 60 * 60 * 1000;
+    let failures = 0;
     while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 950));
-      const task = await api(`/api/tasks/${taskId}`);
+      await new Promise((resolve) => setTimeout(resolve, document.hidden ? 5000 : 1250));
+      let task;
+      try { task = await api(`/api/tasks/${taskId}`); failures = 0; }
+      catch (error) {
+        failures += 1;
+        if (failures >= 5) throw new Error("Não foi possível acompanhar a tarefa. Ela pode continuar no servidor; atualize esta página para conferir antes de tentar novamente.");
+        if (onProgress) onProgress("Reconectando ao processamento...");
+        continue;
+      }
       if (task.status === "done") return task.result;
       if (["error", "interrupted"].includes(task.status)) throw new Error(task.error || "Tarefa interrompida");
-      if (onProgress) onProgress(task.status);
+      if (onProgress) onProgress(taskMessage(task));
     }
-    throw new Error("Tempo excedido na consulta. Confira o estado do servidor antes de repetir a exportacao.");
+    throw new Error("O acompanhamento desta página foi encerrado. A tarefa pode continuar no servidor; atualize o projeto para conferir seu resultado.");
+  }
+  function normalizedStyle(value) {
+    return {font_family:supportedFonts.has(value?.font_family) ? value.font_family : defaultStyle.font_family,
+      font_size:Number.isInteger(value?.font_size) && value.font_size >= 18 && value.font_size <= 96 ? value.font_size : defaultStyle.font_size,
+      color:/^#[0-9a-f]{6}$/i.test(value?.color || "") ? value.color.toUpperCase() : defaultStyle.color};
+  }
+  function sameStyle(a, b) {
+    return Boolean(a && b && a.font_family === b.font_family && a.font_size === b.font_size && a.color.toUpperCase() === b.color.toUpperCase());
+  }
+  function readStyle() {
+    const size = Number($("#subtitle-size").value);
+    const valid = Number.isInteger(size) && size >= 18 && size <= 96;
+    $("#subtitle-size").setCustomValidity(valid ? "" : "Escolha um tamanho inteiro entre 18 e 96.");
+    if (!valid || !supportedFonts.has($("#subtitle-font").value)) return null;
+    return {font_family:$("#subtitle-font").value, font_size:size, color:$("#subtitle-color").value.toUpperCase()};
+  }
+  function applyStyle(value) {
+    const style = normalizedStyle(value);
+    $("#subtitle-font").value = style.font_family;
+    $("#subtitle-size").value = style.font_size;
+    $("#subtitle-color").value = style.color.toLowerCase();
+    updateStyleSample();
+  }
+  function updateStyleSample() {
+    const style = readStyle();
+    if (!style) return;
+    const sample = $("#subtitle-sample");
+    sample.style.fontFamily = `"${style.font_family}", sans-serif`;
+    sample.style.fontSize = `${Math.round(style.font_size * 720 / 1080 * 100) / 100}px`;
+    sample.style.color = style.color;
+  }
+  async function flushStyle() {
+    clearTimeout(styleSaveTimer);
+    if (!state.styleLoaded) throw new Error("Aguarde o carregamento das opções de legenda.");
+    // Serialize writes and recheck the controls after every response. A late save
+    // must never overwrite a newer color/font or race the render request.
+    while (true) {
+      if (styleSavePromise) { await styleSavePromise; continue; }
+      const wanted = readStyle();
+      if (!wanted) throw new Error("Escolha um tamanho de legenda inteiro entre 18 e 96.");
+      if (sameStyle(wanted, state.savedStyle)) return wanted;
+      const revision = styleRevision;
+      styleStatus.textContent = "Salvando aparência das legendas...";
+      const pending = api(`/api/videos/${videoId}/subtitle-style`, {method:"PUT", body:JSON.stringify(wanted)})
+        .then((result) => {
+          state.savedStyle = normalizedStyle(result.subtitle_style || wanted);
+          if (revision === styleRevision) styleStatus.textContent = "Aparência salva neste vídeo.";
+        });
+      styleSavePromise = pending;
+      try { await pending; }
+      catch (error) { styleStatus.textContent = `Não foi possível salvar: ${error.message}`; throw error; }
+      finally { if (styleSavePromise === pending) styleSavePromise = null; }
+    }
+  }
+  function styleChanged() {
+    styleRevision += 1;
+    clearTimeout(styleSaveTimer);
+    $("#approve-preview").checked = false;
+    updateStyleSample();
+    updateApproval();
+    if (!readStyle()) { styleStatus.textContent = "Escolha um tamanho inteiro entre 18 e 96."; return; }
+    styleStatus.textContent = "Aplicando alteração...";
+    styleSaveTimer = setTimeout(() => flushStyle().catch((error) => notice(error.message, "error")), 400);
   }
   function segments() { return state.timeline?.segments || []; }
   function selected() { return segments().find((segment) => segment.id === state.selectedId) || null; }
@@ -94,8 +189,8 @@
     }));
     updateSelection(false);
     $("#caption-track").textContent = state.words.length
-      ? `Legendas em ${state.transcriptEngine}: ${state.words.length} palavras disponíveis · exportação em SRT`
-      : "Transcreva localmente para criar legendas; requer faster-whisper instalado";
+      ? `${state.words.length} palavras disponíveis · legendas SRT e VTT`
+      : "Gere a transcrição abaixo para criar legendas";
     updateApproval();
   }
   function invalidateApproval() {
@@ -128,60 +223,89 @@
     $("#trim-end").max = data.timeline.source_duration;
   }
   async function loadExports() {
+    const request = ++exportsRequest;
     const data = await api(`/api/videos/${videoId}/timeline/exports`);
+    if (request !== exportsRequest) return;
+    if (state.exports.preview?.render_id !== data.exports?.preview?.render_id)
+      $("#approve-preview").checked = false;
     state.exports = data.exports || {};
     updateApproval();
+  }
+  function exportMatches(meta, options = currentOptions()) {
+    return Boolean(meta && meta.version === state.timeline?.version && meta.layout === options.layout &&
+      meta.subtitles === options.subtitles && sameStyle(normalizedStyle(meta.subtitle_style), options.subtitle_style));
+  }
+  function renderedUrl(quality, meta) {
+    return `/api/videos/${videoId}/timeline/rendered/${quality}?render_id=${encodeURIComponent(meta.render_id || `v${meta.version}`)}`;
   }
   function updateApproval() {
     const options = currentOptions();
     const preview = state.exports.preview;
-    const matching = preview && preview.version === state.timeline?.version &&
-      preview.layout === options.layout && preview.subtitles === options.subtitles;
-    $("#render-preview").disabled = !$("#approve-selection").checked;
-    $("#render-final").disabled = !matching || !$("#approve-preview").checked;
-    const previewUrl = `/api/videos/${videoId}/timeline/rendered/preview`;
-    const finalUrl = `/api/videos/${videoId}/timeline/rendered/final`;
-    const freshPreview = preview && preview.version === state.timeline?.version;
-    $("#preview-status").textContent = freshPreview
-      ? `Prévia ${fmtTime(preview.probe.duration)} disponível (${preview.layout}${preview.subtitles ? ", com legendas" : ""}).`
-      : "Prévia ainda não gerada para esta montagem.";
-    $("#preview-link").classList.toggle("hidden", !freshPreview);
-    $("#preview-video").classList.toggle("hidden", !freshPreview);
-    if (freshPreview) {
-      $("#preview-link").href = previewUrl;
-      if (!$("#preview-video").src.includes("timeline/rendered/preview")) $("#preview-video").src = previewUrl;
-    } else {
+    const matching = exportMatches(preview, options);
+    const busy = Boolean(state.rendering || state.transcribing || state.transcriptState.status === "running");
+    $("#render-preview").disabled = busy || !state.timeline || !state.styleLoaded || !options.subtitle_style || !$("#approve-selection").checked;
+    $("#approve-preview").disabled = busy || !matching;
+    if (!matching) $("#approve-preview").checked = false;
+    $("#render-final").disabled = busy || !matching || !$("#approve-preview").checked;
+    const layouts = {blur:"fundo desfocado", fit:"vídeo com bordas", crop:"recorte central"};
+    if (state.rendering !== "preview") $("#preview-status").textContent = matching
+      ? `Prévia de ${fmtTime(preview.probe?.duration)} disponível: ${layouts[preview.layout] || "vertical"}${preview.subtitles ? ", com legendas" : ""}.`
+      : preview ? "Configuração alterada. Gere uma nova prévia para revisar." : "Prévia ainda não gerada para esta montagem.";
+    $("#preview-link").classList.toggle("hidden", !matching);
+    $("#preview-video").classList.toggle("hidden", !matching);
+    if (matching) {
+      const url = renderedUrl("preview", preview);
+      $("#preview-link").href = url;
+      if ($("#preview-video").getAttribute("src") !== url) {
+        $("#preview-video").src = url;
+        $("#preview-video").load();
+      }
+    } else if ($("#preview-video").hasAttribute("src")) {
+      $("#preview-link").removeAttribute("href");
       $("#preview-video").removeAttribute("src");
       $("#preview-video").load();
     }
     const final = state.exports.final;
-    const freshFinal = final && final.version === state.timeline?.version;
+    const freshFinal = exportMatches(final, options);
     $("#final-link").classList.toggle("hidden", !freshFinal);
-    $("#final-status").textContent = freshFinal
-      ? `Final ${fmtTime(final.probe.duration)} disponível em 1080 × 1920.`
+    if (state.rendering !== "final") $("#final-status").textContent = freshFinal
+      ? `Vídeo final de ${fmtTime(final.probe?.duration)} disponível em 1080 × 1920.`
       : matching ? "Prévia pronta; revise o vídeo acima e confirme a aprovação." : "Gere uma prévia nesta configuração para liberar o final.";
-    if (freshFinal) $("#final-link").href = finalUrl;
+    if (freshFinal) $("#final-link").href = renderedUrl("final", final);
+    else $("#final-link").removeAttribute("href");
   }
   function currentOptions() {
-    return {layout:$("#export-layout").value, subtitles:$("#export-subtitles").checked};
+    return {layout:$("#export-layout").value, subtitles:$("#export-subtitles").checked, subtitle_style:readStyle()};
   }
   async function exportTimeline(quality) {
+    if (state.rendering || state.transcribing) return;
     const button = quality === "preview" ? $("#render-preview") : $("#render-final");
-    setBusy(button, true, "Processando FFmpeg...");
+    const status = quality === "preview" ? $("#preview-status") : $("#final-status");
+    state.rendering = quality;
+    setBusy(button, true, "Preparando vídeo...");
+    updateApproval();
+    updateTranscriptionButton();
     try {
+      await flushStyle();
+      const options = currentOptions();
+      if (quality === "final" && (!exportMatches(state.exports.preview, options) || !$("#approve-preview").checked))
+        throw new Error("Gere e aprove uma prévia com estas opções antes de exportar o vídeo final.");
+      if (quality === "preview") $("#approve-preview").checked = false;
       const result = await api(`/api/videos/${videoId}/timeline/render/${quality}`, {method:"POST", body:JSON.stringify({
-        ...currentOptions(), approved_selection:$("#approve-selection").checked,
+        ...options, approved_selection:$("#approve-selection").checked,
         approved_preview:$("#approve-preview").checked,
       })});
-      await pollTask(result.task_id, (status) => { button.textContent = `Renderizando (${status})...`; });
+      await pollTask(result.task_id, (message) => { status.textContent = message; });
       await loadExports();
-      if (quality === "preview") {
-        $("#preview-video").src = `/api/videos/${videoId}/timeline/rendered/preview?v=${state.timeline.version}`;
-        $("#preview-video").load();
-      }
       notice(`${quality === "preview" ? "Prévia" : "Exportação final"} gerada no servidor.`, "ok");
-    } catch (error) { notice(error.message, "error"); }
-    finally { setBusy(button, false); updateApproval(); }
+    } catch (error) { button.dataset.lastError = error.message; notice(error.message, "error"); }
+    finally {
+      state.rendering = null;
+      setBusy(button, false);
+      updateApproval();
+      updateTranscriptionButton();
+      if (button.dataset.lastError) { status.textContent = button.dataset.lastError; delete button.dataset.lastError; }
+    }
   }
   function seekSource(time) {
     state.playing = false;
@@ -220,20 +344,60 @@
     const shown = matches.slice(0, 180);
     $("#transcript-words").innerHTML = shown.length
       ? shown.map((w) => `<span class="word"><button type="button" data-seek="${w.i}" title="Ver fala em ${fmtTime(w.start)}">${escapeHtml(w.text)} <small>${fmtTime(w.start)}</small></button><button type="button" data-addword="${w.i}" title="Adicionar trecho em torno desta palavra">+</button></span>`).join("")
-      : `<p class="hint">${state.words.length ? "Nenhuma fala encontrada para a busca." : "Não há transcrição disponível. Use ‘Transcrever localmente’ quando o módulo estiver instalado."}</p>`;
-    $("#transcript-info").textContent = state.words.length
-      ? `${state.words.length} palavras · motor: ${state.transcriptEngine} ${shown.length < matches.length ? `· mostrando ${shown.length}/${matches.length}` : ""}`
-      : "Sem transcrição disponível; o editor de cortes e a exportação funcionam sem ela.";
-    $("#download-srt").classList.toggle("hidden", !state.words.length);
-    $("#download-srt").href = `/api/videos/${videoId}/timeline.srt`;
+      : `<p class="hint">${state.words.length ? "Nenhuma fala encontrada para a busca." : "As falas aparecerão aqui depois da transcrição."}</p>`;
+    if (!state.transcribing) {
+      const status = state.transcriptState.status;
+      $("#transcript-info").textContent = status === "running"
+        ? state.transcriptState.message || "Gerando transcrição. Você pode continuar organizando os trechos."
+        : status === "error" ? `A transcrição não foi concluída. ${state.transcriptState.message || "Tente novamente quando o serviço estiver disponível."}`
+        : state.words.length ? `${state.words.length} palavras transcritas${shown.length < matches.length ? ` · mostrando ${shown.length} de ${matches.length}` : ""}.`
+        : state.transcriptNotice || (status === "done" ? "A transcrição terminou sem detectar falas." : state.transcribeAvailable ? "Gere a transcrição para criar legendas e editar pelas falas." : "A transcrição está indisponível neste servidor. Os cortes continuam disponíveis.");
+    }
+    for (const extension of ["srt", "vtt"]) {
+      const link = $(`#download-${extension}`);
+      link.classList.toggle("hidden", !state.words.length);
+      if (state.words.length) link.href = `/api/videos/${videoId}/timeline.${extension}`;
+      else link.removeAttribute("href");
+    }
+    $("#remove-pauses").disabled = !state.words.length || state.transcribing || state.transcriptState.status === "running";
+  }
+  function updateTranscriptionButton() {
+    const button = $("#transcribe-local");
+    const running = state.transcribing || state.transcriptState.status === "running";
+    button.disabled = !state.transcribeAvailable || running || Boolean(state.rendering);
+    button.textContent = running ? "Gerando transcrição..." : state.transcribeAvailable
+      ? state.words.length ? "Gerar transcrição novamente" : "Gerar transcrição e legendas"
+      : "Transcrição indisponível";
+    button.title = state.transcribeAvailable ? "" : "O serviço de transcrição precisa estar disponível no servidor. Você pode continuar cortando e exportando sem legendas.";
   }
   async function loadTranscript() {
+    const request = ++transcriptRequest;
+    const revision = styleRevision;
     const result = await api(`/api/videos/${videoId}/transcript`);
+    if (request !== transcriptRequest) return;
     state.words = result.words || [];
     state.transcriptEngine = result.engine || "none";
+    state.transcriptState = result.state || {};
+    state.transcriptNotice = result.notice || "";
+    if (!state.styleLoaded) {
+      state.savedStyle = normalizedStyle(result.subtitle_style);
+      if (revision === styleRevision) applyStyle(state.savedStyle);
+      state.styleLoaded = true;
+      styleInputs.forEach((input) => input.disabled = false);
+    }
     showWords();
+    updateTranscriptionButton();
     $("#caption-track").textContent = state.words.length
-      ? `${state.words.length} palavras disponíveis para legendas e exportação SRT` : "Sem transcrição";
+      ? `${state.words.length} palavras disponíveis · legendas SRT e VTT`
+      : state.transcriptState.status === "running" ? "Preparando legendas..." : "Gere a transcrição para criar legendas";
+    updateApproval();
+    clearTimeout(transcriptRefreshTimer);
+    if (!state.transcribing && state.transcriptState.status === "running") {
+      transcriptRefreshTimer = setTimeout(async () => {
+        try { await loadTranscript(); await loadExports(); }
+        catch (error) { notice(`Não foi possível atualizar a transcrição: ${error.message}`, "error"); }
+      }, document.hidden ? 10000 : 5000);
+    }
   }
   $("#transcript-words").addEventListener("click", (event) => {
     const button = event.target.closest("button");
@@ -275,20 +439,33 @@
       command("remove_pauses", {threshold:Number($("#pause-threshold").value)});
   });
   $("#transcribe-local").addEventListener("click", async () => {
-    const button = $("#transcribe-local");
-    setBusy(button, true, "Transcrevendo localmente...");
+    if (state.transcribing || state.rendering || !state.transcribeAvailable) return;
+    state.transcribing = true;
+    clearTimeout(transcriptRefreshTimer);
+    invalidateApproval();
+    updateTranscriptionButton();
+    $("#transcript-info").textContent = "Preparando a transcrição...";
+    $("#remove-pauses").disabled = true;
     try {
       const result = await api(`/api/videos/${videoId}/transcript`, {method:"POST", body:"{}"});
-      await pollTask(result.task_id);
+      await pollTask(result.task_id, (message) => { $("#transcript-info").textContent = message; });
       await loadTranscript();
-      notice("Transcrição local concluída.", "ok");
-    } catch (error) { notice(error.message, "error"); }
-    finally { setBusy(button, false); }
+      await loadExports();
+      $("#approve-preview").checked = false;
+      notice(state.words.length ? "Transcrição concluída. Legendas SRT e VTT disponíveis." : state.transcriptNotice || "Transcrição concluída, mas nenhuma fala foi detectada.", state.words.length ? "ok" : "info");
+    } catch (error) {
+      state.transcriptState = {status:"error", message:error.message};
+      notice(error.message, "error");
+    }
+    finally { state.transcribing = false; showWords(); updateTranscriptionButton(); updateApproval(); }
   });
   $("#render-preview").addEventListener("click", () => exportTimeline("preview"));
   $("#render-final").addEventListener("click", () => exportTimeline("final"));
-  for (const selector of ["#export-layout", "#export-subtitles", "#approve-selection", "#approve-preview"])
+  for (const selector of ["#export-layout", "#export-subtitles"])
+    $(selector).addEventListener("change", () => { $("#approve-preview").checked = false; updateApproval(); });
+  for (const selector of ["#approve-selection", "#approve-preview"])
     $(selector).addEventListener("change", updateApproval);
+  for (const input of styleInputs) input.addEventListener("input", styleChanged);
 
   async function init() {
     if (!videoId) return notice("Identificador de vídeo inválido.", "error");
@@ -299,12 +476,8 @@
       if (item) $("#project-title").textContent = `${item.name} · ${fmtTime(item.duration)} · ${item.width}×${item.height}`;
       await loadTimeline();
       const cfg = await api("/api/config");
-      if (!cfg.transcribe_available) {
-        const transcribeButton = $("#transcribe-local");
-        transcribeButton.disabled = true;
-        transcribeButton.textContent = "Transcrição não instalada";
-        transcribeButton.title = "Instale faster-whisper no servidor e reinicie o AutoClips.";
-      }
+      state.transcribeAvailable = Boolean(cfg.transcribe_available);
+      updateTranscriptionButton();
       $("#add-end").value = Math.min(15, state.duration).toFixed(1);
       await loadTranscript();
       await loadExports();
