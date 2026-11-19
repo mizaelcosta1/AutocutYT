@@ -9,14 +9,18 @@ from pathlib import Path
 import tempfile
 
 from autoclips import generate_srt, probe, render_clip, run, sha256_file
+from composition import normalize_layout_config, output_dimensions, require_face
 from subtitles import normalize_subtitle_style
 from timeline import total_duration
 
 
 def render_project(source: Path, destination: Path, document: dict, *, words: list[dict],
-                   quality: str, layout: str, subtitles: bool, subtitle_style=None) -> dict:
+                   quality: str, layout: str, subtitles: bool, subtitle_style=None, layout_config=None) -> dict:
     if quality not in {"preview", "final"} or layout not in {"blur", "fit", "crop"}:
         raise ValueError("Configuracao de render invalida")
+    config = normalize_layout_config(layout_config)
+    require_face(config)
+    expected_width, expected_height = output_dimensions(quality, config["aspect"])
     source = Path(source)
     destination = Path(destination)
     if not source.exists() or sha256_file(source) != document["source_sha256"]:
@@ -42,7 +46,7 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
                         {"start": segment["source_in"], "end": segment["source_out"]},
                         quality=quality, layout=layout, burn=bool(has_subs),
                         srt=srt if has_subs else None, has_audio=has_audio,
-                        subtitle_style=subtitle_style)
+                        subtitle_style=subtitle_style, layout_config=config)
             parts.append(part.name)
         concat_file = temp / "concat.txt"
         concat_file.write_text("".join(f"file '{name}'\n" for name in parts), encoding="utf-8")
@@ -51,7 +55,6 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
              "-f", "concat", "-safe", "0", "-i", str(concat_file),
              "-c", "copy", "-movflags", "+faststart", str(pending)], timeout=180)
         rendered = probe(pending)
-        expected_width, expected_height = (720, 1280) if quality == "preview" else (1080, 1920)
         if rendered["width"] != expected_width or rendered["height"] != expected_height:
             raise ValueError("Resolucao gerada nao corresponde ao perfil")
         if has_audio and not rendered["audio_codec"]:
@@ -59,8 +62,11 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
         if abs(rendered["duration"] - edited_duration) > 1.1:
             raise ValueError("Duracao divergente da timeline")
         run(["ffmpeg", "-v", "error", "-xerror", "-i", str(pending), "-f", "null", "-"], timeout=180)
+        if not source.is_file() or sha256_file(source) != document["source_sha256"]:
+            raise ValueError("O vídeo original mudou durante a exportação.")
         pending.replace(destination)
     return {"version": document["version"], "quality": quality, "layout": layout,
-            "subtitles": subtitles, "subtitle_style": subtitle_style,
+            "subtitles": subtitles, "subtitle_style": subtitle_style, "layout_config": config,
+            "output_width": expected_width, "output_height": expected_height,
             "source_sha256": document["source_sha256"],
             "path": str(destination), "probe": rendered}

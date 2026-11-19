@@ -419,7 +419,7 @@ button.full { width: 100%; }
   overflow: hidden;
   margin-bottom: 16px;
 }
-.video-frame video { width: 100%; max-height: 440px; display: block; }
+.video-frame video { width: 100%; max-height: 440px; display: block; object-fit: contain; background: #050d17; }
 
 .pane-top {
   display: flex;
@@ -492,7 +492,7 @@ button.full { width: 100%; }
 }
 .clip-media video {
   width: 100%; border-radius: 12px; background: #060e17;
-  border: 1px solid var(--border); aspect-ratio: 9/16; object-fit: cover;
+  border: 1px solid var(--border); max-height: 390px; object-fit: contain;
 }
 .yt-publish-box {
   margin-top: 10px;

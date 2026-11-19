@@ -4,8 +4,6 @@ import subprocess
 import json
 import shutil
 import pytest
-from fastapi.testclient import TestClient
-import server
 from autoclips import probe, sha256_file
 from timeline import new_timeline, apply_command
 from timeline_export import render_project
@@ -47,6 +45,8 @@ def test_video_changed_since_project_rejected(sample_video, tmp_path):
 
 
 def test_export_api_requires_explicit_preview_approval(monkeypatch, tmp_path, sample_video):
+    from fastapi.testclient import TestClient
+    import server
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setattr(server, "video_info", lambda vid: {
         "id": VIDEO_ID, "duration": 3, "path": str(sample_video), "name": "synthetic.mp4",
@@ -75,3 +75,40 @@ def test_export_api_requires_explicit_preview_approval(monkeypatch, tmp_path, sa
         "action":"split","id": "seg_001","at": 1,"expected_version":state["version"]}).status_code == 200
     assert client.get(f"/api/videos/{VIDEO_ID}/timeline/rendered/preview").status_code == 404
     assert client.post(base + "final", json={"layout":"fit","approved_preview":True}).status_code == 409
+
+
+def test_composed_horizontal_timeline_preserves_audio_and_canonical_layout(sample_video, tmp_path):
+    doc = new_timeline(VIDEO_ID, 3, sha256_file(sample_video))
+    doc = apply_command(doc, {"action": "trim", "id": "seg_001", "source_in": .2, "source_out": .9})
+    doc = apply_command(doc, {"action": "add", "source_in": 2., "source_out": 2.7})
+    config = {"mode": "split_caption", "aspect": "16:9", "face": {"x": 0, "y": 0, "w": .5, "h": .5}}
+    result = render_project(sample_video, tmp_path / "split.mp4", doc, quality="preview",
+                            layout="fit", layout_config=config, subtitles=True,
+                            words=[{"start": .3, "end": .7, "text": "Olá"}])
+    assert (result["output_width"], result["output_height"]) == (1280, 720)
+    assert result["layout_config"]["face"] == config["face"]
+    assert result["layout_config"]["game_fit"] == "contain"
+    assert result["probe"]["audio_codec"] == "aac"
+    assert result["probe"]["duration"] == pytest.approx(1.4, abs=.25)
+
+
+def test_timeline_discards_render_if_source_replaced_during_export(sample_video, tmp_path, monkeypatch):
+    import timeline_export
+
+    source = tmp_path / "original.mp4"
+    shutil.copyfile(sample_video, source)
+    doc = new_timeline(VIDEO_ID, 3, sha256_file(source))
+    doc = apply_command(doc, {"action": "trim", "id": "seg_001", "source_in": 0, "source_out": .3})
+    real_render = timeline_export.render_clip
+
+    def change_source_after_part(*args, **kwargs):
+        result = real_render(*args, **kwargs)
+        source.write_bytes(b"new upload")
+        return result
+
+    monkeypatch.setattr(timeline_export, "render_clip", change_source_after_part)
+    dest = tmp_path / "joined.mp4"
+    with pytest.raises(ValueError, match="original mudou"):
+        render_project(source, dest, doc, words=[], quality="preview", layout="fit", subtitles=False)
+    assert not dest.exists()
+    assert not list(tmp_path.glob("autoclips-parts-*"))

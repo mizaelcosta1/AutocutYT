@@ -4,15 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#08121d">
-  <title>AutoClips Studio v0.7.4 | Montagem de trechos</title>
+  <title>AutoClips Studio v0.7.5 | Montagem de trechos</title>
   <link rel="stylesheet" href="/static/timeline.css">
+  <link rel="stylesheet" href="/static/layout-editor.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
 <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
 <header class="topbar">
   <a class="back" href="/" aria-label="Voltar ao AutoClips">← <span>AutoClips</span></a>
-  <div class="header-title"><span class="eyebrow">EDITOR · v0.7.4</span><h1>Montagem de trechos</h1><p id="project-title">Carregando projeto...</p></div>
+  <div class="header-title"><span class="eyebrow">EDITOR · v0.7.5</span><h1>Montagem de trechos</h1><p id="project-title">Carregando projeto...</p></div>
   <span class="state-tag">SEU ORIGINAL É PRESERVADO</span>
 </header>
 <main class="workspace" id="main-content" tabindex="-1">
@@ -41,8 +42,9 @@
       </div>
     </section>
     <aside class="panel export-panel" aria-label="Exportação da montagem">
-      <div class="panel-head"><div><span class="eyebrow">PRÉVIA E ARQUIVO FINAL</span><h2>Exportar montagem</h2></div><span class="pill cyan">9:16</span></div>
+      <div class="panel-head"><div><span class="eyebrow">PRÉVIA E ARQUIVO FINAL</span><h2>Exportar montagem</h2></div></div>
       <p class="hint">Os trechos serão unidos na ordem da timeline. Revise a prévia antes de baixar o vídeo final.</p>
+      <div id="layout-editor" class="layout-editor"></div>
       <label class="field">ENQUADRAMENTO<select id="export-layout"><option value="blur">Fundo desfocado</option><option value="fit">Vídeo inteiro com bordas</option><option value="crop">Recorte central</option></select></label>
       <label class="check"><input id="export-subtitles" type="checkbox"> Incluir legendas no vídeo</label>
       <details class="subtitle-options" open>
@@ -66,7 +68,7 @@
       <button id="render-final" class="primary full" disabled>2 · Exportar final 1080p</button>
       <p class="hint" id="final-status">Exportação final indisponível até aprovação da prévia.</p>
       <a id="final-link" class="download hidden" download="autoclips-final.mp4">Baixar vídeo final MP4</a>
-      <details class="safety-note"><summary>Qualidade e publicação</summary><p>Prévia: 720 × 1280. Final: 1080 × 1920. Mudanças no corte ou no estilo exigem uma nova prévia. Para publicar, volte ao editor de clipes e aprove o envio para a plataforma.</p></details>
+      <details class="safety-note"><summary>Qualidade e publicação</summary><p>Prévia em 720p. Final em 1080p. Mudanças no corte ou no estilo exigem uma nova prévia. Para publicar, volte ao editor de clipes e aprove o envio para a plataforma.</p></details>
     </aside>
   </div>
 
@@ -100,7 +102,8 @@
     <div id="transcript-words" class="word-list" aria-live="polite"></div>
     <details class="transcript-help"><summary>Como funciona a redução de pausas?</summary><p class="hint">Após gerar a transcrição, escolha quanto tempo de silêncio conta como pausa longa e clique em reduzir. A montagem é atualizada; você pode desfazer. O vídeo original permanece intacto.</p><p class="hint">SRT e VTT guardam as falas e seus tempos. Fonte, cor e tamanho são aplicados ao vídeo exportado.</p></details>
   </section>
-  <footer>AutoClips AI Studio v0.7.4 · Montagem de cortes, transcrição e legendas</footer>
+  <footer>AutoClips AI Studio v0.7.5 · Montagem de cortes, transcrição e legendas</footer>
 </main>
+<script src="/static/layout-editor.js"></script>
 <script src="/static/timeline.js"></script>
 </body></html>

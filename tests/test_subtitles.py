@@ -110,3 +110,16 @@ def test_real_ffmpeg_burns_requested_font_color_and_consistent_relative_size(tmp
     larger_box = _colored_bbox(alternate, 720, red=False)
     assert larger_box[1] > boxes[0][1]
     assert not list(tmp_path.glob("autoclips-subs-*.ass"))
+
+
+@pytest.mark.parametrize(("position", "expected"), [
+    ("top", ",8,64,64,63,1"), ("bottom", ",2,64,64,63,1"),
+    ("middle", r"{\an5\pos(960,540)}"),
+])
+def test_horizontal_caption_positions(tmp_path, position, expected):
+    srt, ass = tmp_path / "text.srt", tmp_path / "text.ass"
+    generate_srt([{"start": 0, "end": 1, "text": "Texto"}], 0, 1, srt)
+    write_styled_ass(srt, ass, layout_config={"aspect": "16:9", "caption_position": position})
+    contents = ass.read_text()
+    assert "PlayResX: 1920\nPlayResY: 1080" in contents
+    assert expected in contents

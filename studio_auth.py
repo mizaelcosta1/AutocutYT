@@ -90,7 +90,7 @@ def verify_identity(raw, client_id):
 
 
 def login_html(configured_ok):
-    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.4</div><h1>AutoClips AI Studio</h1><p>Da live ao clipe, com transcrição, legendas e uma prévia para revisar cada detalhe.</p>'''
+    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.5</div><h1>AutoClips AI Studio</h1><p>Da live ao clipe: escolha o rosto, combine as telas e revise suas legendas antes de exportar.</p>'''
     if configured_ok:
         content += '<a class="button" href="/login/google">Entrar com Google</a>'
     else:

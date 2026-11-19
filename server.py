@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from autoclips import (MEDIA_EXTENSIONS, analyze, download_vod, generate_srt, transcript_local, probe,
                        render_clip, run, sha256_file, workspace, write_json)
@@ -40,8 +40,10 @@ from ai_runtime import ModelRequestError
 from subtitles import SubtitleStyle, normalize_subtitle_style, generate_vtt
 from transcription import default_model_name
 from live_preview import start_capture, preview_directory, preview_status, resolve_preview_asset, cleanup_preview
+from composition import LayoutConfig, normalize_layout_config, require_face
+from layout_presets import builtin_presets
 
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.7.5"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -274,8 +276,10 @@ class RenderRequest(BaseModel):
     layout: str = "blur"
     subtitles: bool = False
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+    layout_config: LayoutConfig = Field(default_factory=LayoutConfig)
     approved_selection: bool = False
     approved_preview: bool = False
+    approved_preview_id: str | None = Field(default=None, max_length=64)
 
 
 class LiveStart(BaseModel):
@@ -323,7 +327,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
@@ -344,6 +348,9 @@ def config():
         "transcribe_available": has_whisper,
         "transcription_model": default_model_name(),
         "live_preview_available": bool(shutil.which("ffmpeg")) and bool(shutil.which("streamlink")),
+        "face_detection_available": _face_detection_ready(),
+        "layout_aspects": ["9:16", "16:9"],
+        "layout_modes": ["standard", "split", "split_caption", "pip"],
         "ai_titles_ready": get_selected(CONNECTION_VAULT, "titles") is not None,
         "chunksize": CHUNK_SIZE,
         "upload_limit": None,
@@ -460,6 +467,141 @@ def save_subtitle_style(video_id: str, style: SubtitleStyle):
         folder.mkdir(parents=True, exist_ok=True)
         write_json(folder / "subtitle_style.json", style.model_dump())
     return {"subtitle_style": style.model_dump()}
+
+
+class LayoutSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    layout: Literal["blur", "fit", "crop"] = "blur"
+    layout_config: LayoutConfig = Field(default_factory=LayoutConfig)
+
+
+class LayoutPreset(LayoutSettings):
+    name: str = Field(min_length=1, max_length=60)
+    subtitles: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def readable_name(cls, value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Dê um nome ao modelo de layout.")
+        return value
+
+
+def _layout_settings(video_id: str) -> dict:
+    saved = read_json(_project_folder(video_id) / "layout.json", {})
+    return LayoutSettings.model_validate(saved).model_dump()
+
+
+@app.get("/api/videos/{video_id}/layout")
+def get_layout_settings(video_id: str):
+    return _layout_settings(video_id)
+
+
+@app.put("/api/videos/{video_id}/layout")
+def save_layout_settings(video_id: str, settings: LayoutSettings):
+    # An incomplete composition can be saved while editing; rendering requires
+    # a selected face region. Saving never changes an already rendered file.
+    with LOCK:
+        file = _project_folder(video_id) / "layout.json"
+        write_json(file, settings.model_dump())
+    return settings.model_dump()
+
+
+@app.get("/api/layout-presets")
+def layout_presets():
+    with LOCK:
+        return {"presets": builtin_presets(), "custom_presets": read_json(ROOT / "layout_presets.json", [])}
+
+
+@app.post("/api/layout-presets")
+def create_layout_preset(preset: LayoutPreset):
+    with LOCK:
+        path = ROOT / "layout_presets.json"
+        saved = read_json(path, [])
+        if len(saved) >= 30:
+            raise HTTPException(409, "Você já tem 30 modelos. Exclua um para salvar outro.")
+        item = {"id": "custom-" + uuid.uuid4().hex, **preset.model_dump(exclude_none=True),
+                "description": "Modelo personalizado. Confira o rosto e a área do jogo em cada vídeo."}
+        saved.append(item)
+        write_json(path, saved)
+    return item
+
+
+@app.delete("/api/layout-presets/{preset_id}")
+def delete_layout_preset(preset_id: str):
+    if not re.fullmatch(r"custom-[0-9a-f]{32}", preset_id):
+        raise HTTPException(404, "Modelo personalizado não encontrado.")
+    with LOCK:
+        path = ROOT / "layout_presets.json"
+        saved = read_json(path, [])
+        remaining = [item for item in saved if item.get("id") != preset_id]
+        if len(remaining) == len(saved):
+            raise HTTPException(404, "Modelo personalizado não encontrado.")
+        write_json(path, remaining)
+    return {"deleted": True}
+
+
+def _face_detection_ready() -> bool:
+    try:
+        from face_detection import face_detection_available
+        return face_detection_available()
+    except (ImportError, ValueError):
+        return False
+
+
+class FaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    start: float = Field(default=0, ge=0)
+    end: float | None = Field(default=None, gt=0)
+
+
+@app.post("/api/videos/{video_id}/faces")
+def locate_faces(video_id: str, request: FaceRequest):
+    item = video_info(video_id)
+    end = request.end if request.end is not None else float(item["duration"])
+    if not request.start < min(end, float(item["duration"])) or end > float(item["duration"]) + .01:
+        raise HTTPException(400, "Escolha um intervalo dentro do vídeo para localizar o rosto.")
+    end = min(end, float(item["duration"]))
+    if not _face_detection_ready():
+        raise HTTPException(503, "A localização automática de rostos está indisponível. Você pode marcar a área manualmente.")
+    def work():
+        from face_detection import analyze_faces
+        return analyze_faces(Path(item["path"]), start=request.start, end=end, progress=task_progress)
+    return {"task_id": _schedule_video("detect-faces", video_id, work)}
+
+
+FRAME_SLOTS = threading.BoundedSemaphore(2)
+
+
+@app.get("/api/videos/{video_id}/frame")
+def source_frame(video_id: str, at: float = 0):
+    item = video_info(video_id)
+    duration = float(item["duration"])
+    if not math.isfinite(at) or at < 0 or at >= duration:
+        raise HTTPException(400, "Escolha um momento dentro do vídeo.")
+    if not FRAME_SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Aguarde o quadro anterior carregar.")
+    try:
+        from face_detection import display_frame_geometry, FaceDetectionError
+        try:
+            _, _, sample_width, sample_height = display_frame_geometry(Path(item["path"]), max_side=960)
+        except FaceDetectionError:
+            raise HTTPException(422, "Não foi possível ler este vídeo para mostrar o quadro.")
+        # Exactly the same autorotation, SAR and scale as the detector.
+        result = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file",
+            "-threads", "2", "-ss", str(at), "-i", str(item["path"]), "-map", "0:V:0",
+            "-frames:v", "1", "-an", "-sn", "-dn", "-filter_threads", "1",
+            "-vf", f"scale={sample_width}:{sample_height},setsar=1",
+            "-threads", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+            capture_output=True, timeout=25, check=False)
+        if result.returncode or not result.stdout:
+            raise HTTPException(422, "Não foi possível abrir este quadro. Escolha outro momento.")
+        return Response(result.stdout, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        raise HTTPException(503, "O quadro demorou para carregar. Tente outro momento.")
+    finally:
+        FRAME_SLOTS.release()
 
 
 def _update_video(video_id: str, **changes) -> dict:
@@ -657,8 +799,10 @@ class TimelineRenderRequest(BaseModel):
     layout: Literal["blur", "fit", "crop"] = "blur"
     subtitles: bool = False
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+    layout_config: LayoutConfig = Field(default_factory=LayoutConfig)
     approved_selection: bool = False
     approved_preview: bool = False
+    approved_preview_id: str | None = Field(default=None, max_length=64)
 
 
 def _current_export(video_id: str, quality: str, *, version: int | None = None) -> dict | None:
@@ -686,6 +830,7 @@ def video_timeline_exports(video_id: str):
                 out[quality] = {"url": f"/api/videos/{video_id}/timeline/rendered/{quality}",
                                 "version": meta["version"], "layout": meta["layout"],
                                 "subtitles": meta["subtitles"], "probe": meta["probe"],
+                                "layout_config": normalize_layout_config(meta.get("layout_config")),
                                 "subtitle_style": meta.get("subtitle_style", normalize_subtitle_style()),
                                 "render_id": meta.get("render_id", "")}
         return {"exports": out}
@@ -704,12 +849,21 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
         source = Path(video_info(video_id)["path"])
         doc_snapshot = json.loads(json.dumps(doc))
         style = req.subtitle_style.model_dump()
+        composition = req.layout_config.model_dump()
+        try:
+            require_face(composition)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
         signature = _transcript_signature(video_id)
+        preview_id = None
         if quality == "final":
             preview = _current_export(video_id, "preview", version=doc["version"])
             if (not preview or preview["layout"] != req.layout or preview["subtitles"] != req.subtitles
+                    or normalize_layout_config(preview.get("layout_config")) != composition
+                    or (req.approved_preview_id is not None and preview.get("render_id") != req.approved_preview_id)
                     or (req.subtitles and preview.get("subtitle_style") != style)):
                 raise HTTPException(status_code=409, detail="Gere e assista a previa desta versao com estas opcoes")
+            preview_id = preview.get("render_id")
         words = _transcript_document(video_id).get("words", [])
         if req.subtitles and not rebase_words(doc, words):
             raise HTTPException(409, "Transcreva o vídeo e selecione trechos com fala antes de ativar legendas.")
@@ -718,27 +872,36 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
 
     def work():
         meta = render_project(source, dest, doc_snapshot, words=words,
-                              quality=quality, layout=req.layout, subtitles=req.subtitles, subtitle_style=style)
+                              quality=quality, layout=req.layout, subtitles=req.subtitles,
+                              subtitle_style=style, layout_config=composition)
         with LOCK:
             current, _ = _timeline_document(video_id)
-            if current["version"] != doc_snapshot["version"]:
+            if (current["version"] != doc_snapshot["version"]
+                    or (req.subtitles and signature != _transcript_signature(video_id))):
                 dest.unlink(missing_ok=True)
-                raise ValueError("Timeline mudou durante renderizacao; exportacao descartada")
+                raise ValueError("A montagem ou transcrição mudou durante a renderização. Gere uma nova prévia.")
             exports_file = folder_path.parent / "timeline_exports.json"
             records = read_json(exports_file, {})
-            previous = records.get(quality)
-            meta.update(transcript_signature=signature, render_id=render_id)
+            if quality == "final" and records.get("preview", {}).get("render_id") != preview_id:
+                dest.unlink(missing_ok=True)
+                raise ValueError("A prévia aprovada mudou. Revise a versão atual antes de exportar.")
+            stale = [records.get(quality)]
+            if quality == "preview":
+                stale.append(records.pop("final", None))
+            meta.update(transcript_signature=signature, render_id=render_id,
+                        layout_config=composition, approved_preview_id=preview_id)
             records[quality] = meta
             write_json(exports_file, records)
-            if previous and Path(previous.get("path", "")).is_file():
-                Path(previous["path"]).unlink(missing_ok=True)
+            for previous in stale:
+                if previous and Path(previous.get("path", "")).is_file():
+                    Path(previous["path"]).unlink(missing_ok=True)
         return {"quality": quality, "url": f"/api/videos/{video_id}/timeline/rendered/{quality}"}
 
     return {"task_id": _schedule_video("timeline-" + quality, video_id, work)}
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
-def view_timeline_export(video_id: str, quality: str):
+def view_timeline_export(video_id: str, quality: str, render_id: str | None = None):
     if quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
     with LOCK:
@@ -746,6 +909,8 @@ def view_timeline_export(video_id: str, quality: str):
         meta = _current_export(video_id, quality, version=doc["version"])
         if not meta:
             raise HTTPException(status_code=404, detail="Arquivo nao exportado para a versao atual")
+        if render_id and meta.get("render_id") != render_id:
+            raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
     return FileResponse(meta["path"], media_type="video/mp4", filename=f"autoclips-timeline-{quality}.mp4",
                         content_disposition_type="inline")
 
@@ -1017,8 +1182,8 @@ def show_manifest(video_id: str):
             "clips": [{k: v for k, v in c.items() if k not in {"preview", "final"}} | {
                 "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview?v={c.get('preview', {}).get('render_id', '')}" if ready(c, "preview") else None,
                 "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final?v={c.get('final', {}).get('render_id', '')}" if ready(c, "final") else None,
-                "preview_options": {k: c.get("preview", {}).get(k) for k in ("layout", "burn", "subtitle_style")},
-                "final_options": {k: c.get("final", {}).get(k) for k in ("layout", "burn", "subtitle_style")},
+                "preview_options": {k: c.get("preview", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config", "render_id")},
+                "final_options": {k: c.get("final", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config", "render_id")},
             } for c in manifest["clips"]]}
 
 
@@ -1203,25 +1368,33 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         raise
 
 
-def _preview_matches(clip: dict, layout: str, burn: bool, style: dict, signature: str) -> bool:
+def _preview_matches(clip: dict, layout: str, burn: bool, style: dict, signature: str,
+                     layout_config=None, approved_preview_id=None) -> bool:
     preview = clip.get("preview", {})
     return bool(preview) and preview.get("layout") == layout and preview.get("burn") == burn and (
-        not burn or (preview.get("subtitle_style") == style and preview.get("transcript_signature") == signature))
+        normalize_layout_config(preview.get("layout_config")) == normalize_layout_config(layout_config)
+        and (approved_preview_id is None or preview.get("render_id") == approved_preview_id)
+        and (not burn or (preview.get("subtitle_style") == style and preview.get("transcript_signature") == signature)))
 
 
 def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: bool,
-               subtitle_style=None) -> dict:
+               subtitle_style=None, layout_config=None, approved_preview_id=None) -> dict:
     style = normalize_subtitle_style(subtitle_style)
+    composition = normalize_layout_config(layout_config)
+    require_face(composition)
     with LOCK:
         manifest, work, _ = get_manifest(video_id)
         selected = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
         if selected is None:
             raise ValueError("Clipe nao existe")
         signature = _transcript_signature(video_id)
-        if quality == "final" and not _preview_matches(selected, layout, burn, style, signature):
+        if quality == "final" and not _preview_matches(selected, layout, burn, style, signature,
+                                                       composition, approved_preview_id):
             raise ValueError("Gere e aprove uma prévia com estas opções de enquadramento e legenda.")
+        preview_id = selected.get("preview", {}).get("render_id") if quality == "final" else None
         clip = selected.copy()
         source = Path(manifest["source"])
+        source_signature = manifest["sha256"]
         if not source.exists() or sha256_file(source) != manifest["sha256"]:
             raise ValueError("O original foi alterado; analise novamente")
         has_audio = bool(manifest["probe"]["audio_codec"])
@@ -1236,13 +1409,24 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
     if burn and subs is None:
         raise ValueError("Este corte não tem falas transcritas. Transcreva o vídeo ou desative as legendas.")
     metadata = render_clip(source, dest, clip, quality=quality, layout=layout,
-                           burn=burn, srt=subs, has_audio=has_audio, subtitle_style=style)
+                           burn=burn, srt=subs, has_audio=has_audio, subtitle_style=style,
+                           layout_config=composition)
+    if not source.exists() or sha256_file(source) != source_signature:
+        dest.unlink(missing_ok=True)
+        if subs:
+            subs.unlink(missing_ok=True)
+        raise ValueError("O original mudou durante a renderização. Analise o vídeo novamente.")
     with LOCK:
         manifest, work, _ = get_manifest(video_id)
-        current = next(c for c in manifest["clips"] if c["id"] == clip_id)
-        if current["start"] != clip["start"] or current["end"] != clip["end"]:
+        current = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
+        if (current is None or manifest["sha256"] != source_signature or Path(manifest["source"]) != source
+                or current["start"] != clip["start"] or current["end"] != clip["end"]
+                or (burn and signature != _transcript_signature(video_id))
+                or (quality == "final" and current.get("preview", {}).get("render_id") != preview_id)):
             dest.unlink(missing_ok=True)
-            raise ValueError("Intervalo mudou durante renderizacao; tente novamente")
+            if subs:
+                subs.unlink(missing_ok=True)
+            raise ValueError("O corte, a legenda ou a prévia mudou durante a renderização. Gere uma nova prévia.")
         stale = [current.get(quality)]
         if quality == "preview":
             stale.append(current.pop("final", None))
@@ -1250,6 +1434,7 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
                 current.setdefault("youtube_history", []).append(current.pop("youtube"))
         current[quality] = {"path": str(dest), "subtitles": str(subs) if subs else None,
                             "layout": layout, "burn": burn, "subtitle_style": style,
+                            "layout_config": composition, "approved_preview_id": preview_id,
                             "transcript_signature": signature, "render_id": render_id,
                             "qa": {"full_decode_ok": True, **metadata}}
         current["status"] = "preview_ready" if quality == "preview" else "final_ready"
@@ -1277,21 +1462,29 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
         raise HTTPException(status_code=400, detail="Aprove a previa primeiro")
     clip = next(c for c in manifest["clips"] if c["id"] == req.clip_id)
     style = req.subtitle_style.model_dump()
+    composition = req.layout_config.model_dump()
+    try:
+        require_face(composition)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
     if quality == "final" and not _preview_matches(clip, req.layout, req.subtitles, style,
-                                                  _transcript_signature(video_id)):
+                                                  _transcript_signature(video_id), composition, req.approved_preview_id):
         raise HTTPException(409, "Gere e aprove uma prévia com estas opções de enquadramento e legenda.")
     return {"task_id": _schedule_video("render-" + quality, video_id,
-                lambda: render_one(video_id, req.clip_id, quality, req.layout, req.subtitles, style))}
+                lambda: render_one(video_id, req.clip_id, quality, req.layout, req.subtitles, style,
+                                   composition, req.approved_preview_id))}
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")
-def view_rendered(video_id: str, clip_id: str, quality: str):
+def view_rendered(video_id: str, clip_id: str, quality: str, v: str | None = None):
     manifest, _, _ = get_manifest(video_id)
     if not re.fullmatch(r"clip_[0-9a-z_]+", clip_id) or quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
     clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
     if not clip or quality not in clip:
         raise HTTPException(status_code=404)
+    if v and clip[quality].get("render_id") != v:
+        raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
     if clip[quality].get("burn") and clip[quality].get("transcript_signature") != _transcript_signature(video_id):
         raise HTTPException(409, "A transcrição mudou. Gere uma nova prévia com as legendas atuais.")
     return FileResponse(clip[quality]["path"], media_type="video/mp4", filename=f"{clip_id}_{quality}.mp4", content_disposition_type="inline")

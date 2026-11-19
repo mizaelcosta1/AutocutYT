@@ -135,7 +135,8 @@ test('loads saved font, size and color and exposes synchronized SRT/VTT download
 });
 
 test('debounces font, size and color edits into a single canonical save', async (t) => {
-  const f = await fixture({ exports: { preview: renderMeta() } }); t.after(() => f.close());
+  const f = await fixture({ subtitles:true, words:[{start:0,end:1,text:'Teste'}],
+    exports: { preview: renderMeta(defaultStyle, {subtitles:true}) } }); t.after(() => f.close());
   f.change('#approve-preview', true);
   assert.equal(f.$('#render-final').disabled, false);
   f.input('#subtitle-font', 'Liberation Serif');

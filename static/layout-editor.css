@@ -1,0 +1,42 @@
+/* Shared composition editor */
+.layout-editor { margin: 14px 0; color: #dcebf3; min-width: 0; }
+.layout-editor * { box-sizing: border-box; }
+.le-shell { border: 0; padding: 0; margin: 0; min-width: 0; }
+.layout-editor [hidden] { display: none !important; }
+.le-head { display: grid; gap: 4px; margin-bottom: 10px; }
+.le-head strong { font-size: .98rem; color: #f1f8fb; }
+.le-head span, .le-areas p { color: #a9bfcb; font-size: .8rem; line-height: 1.45; }
+.le-presets { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.le-card-wrap { position: relative; min-width: 0; }
+.layout-editor button, .layout-editor select, .layout-editor input { font: inherit; }
+.le-card { width: 100%; height: 100%; text-align: left; border: 1px solid #385568; border-radius: 9px; background: #102333; color: #e7f6fa; padding: 8px; display: grid; grid-template-columns: 39px minmax(0,1fr); gap: 3px 8px; cursor: pointer; }
+.le-card:hover, .le-card:focus-visible { border-color: #38d6e9; }
+.le-card strong { font-size: .76rem; align-self: end; line-height: 1.2; }
+.le-card small { font-size: .68rem; color: #a9bfcb; line-height: 1.25; }
+.le-thumb { grid-row: span 2; display: block; position: relative; height: 50px; width: 34px; border: 1px solid #66cbd9; background: #294557; overflow: hidden; border-radius: 3px; }
+.le-thumb i,.le-thumb b,.le-thumb em { display: block; position: absolute; }
+.le-thumb i { inset: 4px; background: #41899a; }
+.le-thumb b { display: none; background: #e95e68; }
+.le-thumb-split i,.le-thumb-split_caption i { inset: 0 0 52%; background:#c45b69; }
+.le-thumb-split b,.le-thumb-split_caption b { display:block; inset: 50% 0 0; background:#347f91; }
+.le-thumb-split_caption em { left:0; right:0; top:45%; height:10%; background:#f1f8fb; z-index:1; }
+.le-thumb-pip i { inset:0; } .le-thumb-pip b { display:block; width:38%; height:25%; top:4px; right:3px; border:1px solid white; }
+.le-delete { position:absolute; right:3px; top:3px; border:0; border-radius:4px; color:#ff9ca5; background:#162d3c; cursor:pointer; min-width:24px; min-height:24px; }
+.le-controls { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; margin-top:12px; }
+.le-controls label,.le-numbers label,.le-custom label { display:grid; gap:5px; font-size:.76rem; color:#c4d9e4; min-width:0; }
+.layout-editor select,.layout-editor input[type=number],.layout-editor input[type=text] { width:100%; min-width:0; padding:8px; border:1px solid #426072; border-radius:6px; background:#0b1a28; color:#f3fafd; }
+.le-controls input[type=range] { width:100%; accent-color:#36d1e2; } .le-controls output { font-size:.75rem; }
+.le-custom { display:flex; align-items:end; gap:7px; margin-top:10px; } .le-custom label { flex:1; }
+.le-custom button,.le-row button,.le-reset,.le-candidates button { border:1px solid #456377; border-radius:6px; padding:8px 10px; background:#142c3c; color:#e6f6fa; cursor:pointer; }
+.layout-editor button:focus-visible,.layout-editor input:focus-visible,.layout-editor select:focus-visible,.le-box:focus-visible { outline:3px solid #58e5f2; outline-offset:2px; }
+.le-areas { margin-top:14px; padding:10px; border:1px solid #385568; border-radius:9px; }
+.le-areas summary { cursor:pointer; font-size:.86rem; font-weight:700; color:#d9f8fc; }
+.le-row,.le-candidates { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+.le-row button[aria-pressed=true] { background:#174c59; border-color:#41dce7; color:#fff; }
+.le-status,.le-error { margin:7px 0; } .le-error { color:#ffadb3 !important; }
+.le-stage { touch-action:none; cursor:crosshair; position:relative; width:100%; line-height:0; overflow:hidden; background:#07121a; }
+.le-frame { display:block; width:100%; height:auto; }
+.le-box { position:absolute; border:2px solid #38e5f0; background:#36d6e522; cursor:move; touch-action:none; box-shadow:0 0 0 1px #07121a; }
+.le-resize { position:absolute; right:-7px; bottom:-7px; width:18px; height:18px; border:2px solid #07121a; border-radius:4px; background:#38e5f0; cursor:nwse-resize; touch-action:none; }
+.le-numbers { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:10px; }
+@media (max-width:380px) { .le-controls { grid-template-columns:1fr; } .le-card { grid-template-columns:30px minmax(0,1fr); padding:6px; } .le-thumb { width:27px; height:44px; } }

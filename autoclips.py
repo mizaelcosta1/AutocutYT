@@ -23,6 +23,7 @@ import unicodedata
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from composition import build_composition_graph, normalize_layout_config, output_dimensions
 from subtitles import fmt_srt, generate_srt, generate_vtt, prepared_ass
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".ts", ".m4v"}
@@ -332,34 +333,23 @@ def analyze(src: Path, transcript_json: Path | None, model_name: str | None,
 
 def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
                 layout: str, burn: bool, srt: Path | None, has_audio: bool,
-                subtitle_style=None) -> dict:
+                subtitle_style=None, layout_config=None) -> dict:
+    config = normalize_layout_config(layout_config)
+    width, height = output_dimensions(quality, config["aspect"])
+    graph = build_composition_graph(layout, config, width, height)
     require_executables("ffmpeg", "ffprobe")
-    if quality not in {"preview", "final"} or layout not in {"blur", "fit", "crop"}:
-        raise ValueError("Configuracao de render invalida")
     src, dst = Path(src).resolve(), Path(dst).resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
-    width, height = (720, 1280) if quality == "preview" else (1080, 1920)
-    if layout == "crop":
-        graph = (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-                 f"crop={width}:{height},setsar=1,format=yuv420p[base]")
-    elif layout == "fit":
-        graph = (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[base]")
-    else:
-        graph = (f"[0:v]split=2[original_bg][original_fg];"
-                 f"[original_bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-                 f"crop={width}:{height},boxblur=12:2[bg];"
-                 f"[original_fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
-                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[base]")
-    with prepared_ass(srt if burn else None, dst.parent, subtitle_style) as ass_name:
+    ass_width, ass_height = output_dimensions("final", config["aspect"])
+    with prepared_ass(srt if burn else None, dst.parent, subtitle_style, layout_config=config) as ass_name:
         if ass_name:
-            graph += f";[base]ass=filename='{ass_name}':original_size=1080x1920[v]"
+            graph += f";[base]ass=filename='{ass_name}':original_size={ass_width}x{ass_height}[v]"
         else:
             graph += ";[base]null[v]"
         duration = max(.1, clip["end"] - clip["start"])
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
-               "-filter_complex", graph, "-map", "[v]"]
+               "-filter_complex_threads", "2", "-filter_complex", graph, "-map", "[v]"]
         if has_audio:
             cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
         else:
@@ -373,7 +363,7 @@ def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
     if abs(meta["duration"] - duration) > 1.5:
         raise RuntimeError("Duracao divergente em " + str(dst))
     run(["ffmpeg", "-v", "error", "-xerror", "-i", str(dst), "-f", "null", "-"])
-    return meta
+    return {**meta, "layout_config": config, "output_width": width, "output_height": height}
 
 
 def download_vod(url: str, folder: Path) -> Path:

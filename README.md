@@ -1,4 +1,27 @@
-# AutoClips AI Studio 0.7.4 — transcrição, legendas e prévia da live
+# AutoClips AI Studio 0.7.5 — layouts de cortes e localização de rosto
+
+Os vídeos da biblioteca agora têm um painel **Formato e composição**, compartilhado com a montagem de trechos. Escolha um dos oito modelos, ajuste o rosto e a área do jogo e salve seus próprios modelos para reutilizar.
+
+## Cortes de games e outros formatos
+
+1. Abra um vídeo já salvo na biblioteca. Em **Preparar exportação**, escolha **Game com legenda central**, **Game em duas telas**, tela cheia, fundo desfocado ou rosto na lateral.
+2. Escolha **Vertical · 9:16** ou **Horizontal · 16:9**. A prévia usa 720×1280 ou 1280×720; o final usa 1080×1920 ou 1920×1080.
+3. Nos layouts com câmera, clique em **Procurar rostos** e selecione um candidato. O detector local examina até oito quadros e sugere áreas. Ele não identifica pessoas nem acompanha continuamente o movimento.
+4. Para corrigir o recorte, desenhe um retângulo sobre o quadro, arraste-o ou use a alça para redimensionar. Os campos percentuais permitem ajuste preciso. **Usar quadro do player** mostra o instante atual do vídeo.
+5. Selecione **Jogo** para delimitar a área de gameplay. **Mostrar inteiro** preserva a área escolhida com bordas quando necessário; **Preencher área** pode recortar as extremidades. Ajuste a altura do rosto ou o tamanho e o canto da janela.
+6. **Game com legenda central** reserva 10% da altura para a faixa entre rosto e jogo. Ative **Incluir legendas no vídeo** depois de transcrever. Em tela cheia e PiP, a legenda pode ficar embaixo, no meio ou em cima. Fonte, tamanho e cor continuam personalizáveis.
+7. As alterações são salvas por vídeo. Para reutilizar em outro projeto, dê um nome e clique em **Salvar modelo**. Ao aplicar um modelo personalizado em uma fonte diferente, revise as áreas do rosto e do jogo.
+8. Gere a prévia, assista e aprove antes de exportar. A aprovação é vinculada ao ID da prévia, ao layout, aos recortes e às legendas usados na renderização. Uma nova prévia substitui o final anterior.
+
+O recurso foi integrado à aplicação existente, com `composition.py`, `face_detection.py` e um componente de interface compartilhado. As decisões estão em [docs/LAYOUTS_v0.7.5.md](docs/LAYOUTS_v0.7.5.md); resultados e limites em [qa/QA_v0.7.5.md](qa/QA_v0.7.5.md).
+
+### Dependências da localização de rosto
+
+O Docker instala `requirements-vision.txt` (**opencv-python-headless 4.12.0.88**) junto das dependências existentes. `scripts/prepare_face_model.py` prepara o YuNet `2023mar`, verifica SHA-256 e tamanho do modelo e da licença MIT e armazena ambos fora do volume de vídeos, em `/opt/autoclips-models`. Não há download do detector durante uma edição. `AUTOCLIPS_FACE_MODEL` permite configurar outro caminho para esse mesmo modelo.
+
+Em uma instalação local: instale `requirements.txt`, `requirements-transcription.txt`, `requirements-vision.txt`, FFmpeg/ffprobe e execute `python scripts/prepare_face_model.py --output /caminho/face_detection_yunet_2023mar.onnx`. Configure `AUTOCLIPS_FACE_MODEL` para esse arquivo. Se o detector não estiver disponível, a seleção manual continua utilizável.
+
+## Histórico v0.7.4 — transcrição, legendas e prévia da live
 
 A gravação agora pode ser acompanhada por uma prévia da própria captura. Ao encerrar, o vídeo é salvo, transcrito localmente e preparado para cortes e legendas. O editor e a montagem compartilham a transcrição e as preferências de fonte, tamanho e cor.
 

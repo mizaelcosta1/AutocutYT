@@ -11,6 +11,8 @@
   };
   let styleSaveTimer = null;
   let styleSavePromise = Promise.resolve();
+  let layoutEditor = null;
+  let editorGeneration = 0;
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -344,7 +346,7 @@
   window._openVideoById = async (id) => {
     if (!state.videos.some((x) => x.id === id)) await loadLibrary();
     const v = state.videos.find((x) => x.id === id);
-    if (v) openEditor(v);
+    if (v) return openEditor(v);
   };
 
   window._deleteVideo = async (id) => {
@@ -353,7 +355,13 @@
       await api(`/api/videos/${id}`, { method: "DELETE" });
       showNotice("Projeto excluido.", "ok");
       if (state.currentVideo?.id === id) {
+        editorGeneration++;
+        clearTimeout(styleSaveTimer);
+        layoutEditor?.destroy();
+        layoutEditor = null;
         state.currentVideo = null;
+        state.manifest = null;
+        renderClipsList([]);
         $("#editor-body").classList.add("hidden");
         $("#editor-empty").classList.remove("hidden");
       }
@@ -403,7 +411,9 @@
   }
 
   function optionsMatch(options) {
+    if (layoutEditor && !layoutEditor.isReady()) return false;
     if (!options || options.layout !== $("#layout").value || options.burn !== $("#burn-subs").checked) return false;
+    if (window.LayoutEditor && !window.LayoutEditor.same(options.layout_config, layoutEditor?.getConfig())) return false;
     if (!options.burn) return true;
     const style = subtitleStyle();
     return options.subtitle_style && ["font_family", "font_size", "color"].every((k) => options.subtitle_style[k] === style[k]);
@@ -544,9 +554,20 @@
   });
 
   async function openEditor(video) {
+    const generation = ++editorGeneration;
     if (styleSaveTimer) await persistSubtitleStyle().catch((error) => showNotice(error.message, "error"));
     await styleSavePromise.catch(() => {});
+    if (generation !== editorGeneration) return;
+    if (layoutEditor) {
+      try { if (layoutEditor.isReady()) await layoutEditor.flush(); }
+      catch (error) { return showNotice(`Salve o layout antes de trocar de vídeo: ${error.message}`, "error"); }
+      if (generation !== editorGeneration) return;
+      layoutEditor.destroy();
+      layoutEditor = null;
+    }
     state.currentVideo = video;
+    state.manifest = null;
+    renderClipsList([]);
     state.transcript = null;
     state.completedAnalysisSeen = null;
     const advanced = $("#btn-advanced-timeline");
@@ -563,14 +584,29 @@
     endInput.value = Math.min(dur, 30).toFixed(1);
     syncTimelineUI();
     await loadTranscript(true);
-    if (state.currentVideo?.id !== video.id) return;
+    if (state.currentVideo?.id !== video.id || generation !== editorGeneration) return;
     $("#burn-subs").checked = Boolean(state.transcript?.available);
+    if (window.LayoutEditor) {
+      layoutEditor = window.LayoutEditor.create({container:"#layout-editor", videoId:video.id, layoutSelect:"#layout",
+        onChange:() => updateClipApprovals(true),
+        getSubtitles:() => $("#burn-subs").checked,
+        getTime:() => player.currentTime || 0,
+        onPresetSubtitles:(checked) => { $("#burn-subs").checked = checked && Boolean(state.transcript?.available); updateClipApprovals(true); }});
+      try { await layoutEditor.load(); }
+      catch (error) { showNotice(`Não foi possível carregar o layout: ${error.message}`, "error"); }
+    }
+    if (state.currentVideo?.id !== video.id || generation !== editorGeneration) return;
     await loadManifest();
   }
 
-  $("#btn-advanced-timeline")?.addEventListener("click", () => {
+  $("#btn-advanced-timeline")?.addEventListener("click", async () => {
     if (!state.currentVideo) return showNotice("Selecione um video para abrir a timeline.", "error");
-    window.location.assign(`/studio/${encodeURIComponent(state.currentVideo.id)}`);
+    const id = state.currentVideo.id;
+    try {
+      await persistSubtitleStyle();
+      if (layoutEditor) await layoutEditor.flush();
+      if (state.currentVideo?.id === id) window.location.assign(`/studio/${encodeURIComponent(id)}`);
+    } catch (error) { showNotice(`Não foi possível salvar antes de abrir a montagem: ${error.message}`, "error"); }
   });
   $("#back-library")?.addEventListener("click", () => switchTab("library"));
   $("#empty-go")?.addEventListener("click", () => switchTab("sources"));
@@ -680,7 +716,7 @@
             ${
               c.final_url
                 ? `<div class="yt-publish-box">
-                    <div class="pane-top"><b>Publicar no YouTube Shorts (Aprovacao Obrigatoria)</b><span class="fine">OAUTH</span></div>
+                    <div class="pane-top"><b>Publicar no YouTube</b><span class="fine">ENVIO COM SUA APROVAÇÃO</span></div>
                     <label class="field-label">DESCRICAO / HASHTAGS<textarea class="c-desc" rows="2">${escapeHtml(c.description || c.excerpt || "")}</textarea></label>
                     <div class="trim-grid">
                       <label>PRIVACIDADE
@@ -712,7 +748,7 @@
                 ? `<video controls playsinline src="${c.final_url}"></video><a class="outline" style="text-align:center;text-decoration:none;padding:8px" href="${c.final_url}" download="${c.id}_final_1080p.mp4">Baixar Final 1080p</a>`
                 : c.preview_url
                 ? `<video controls playsinline src="${c.preview_url}"></video><span class="hint" style="text-align:center">Previa 720p pronta</span>`
-                : `<div class="empty-state mini"><p class="small">Gere a previa 720p para visualizar o corte vertical 9:16.</p></div>`
+                : `<div class="empty-state mini"><p class="small">Gere a prévia 720p para revisar o corte no layout escolhido.</p></div>`
             }
           </div>
         </article>`
@@ -778,6 +814,7 @@
     if (!validSubtitleStyle()) { $("#subtitle-size").reportValidity(); return; }
     const card = document.querySelector(`.clip-card[data-clip-id="${clipId}"]`);
     const approvedPreview = Boolean(card?.querySelector(".c-preview-approve")?.checked);
+    const approvedPreviewId = state.manifest?.clips.find((clip) => clip.id === clipId)?.preview_options?.render_id || null;
     if (quality === "final" && !approvedPreview) {
       return showNotice("Assista a previa e marque a aprovacao antes de exportar o final.", "error");
     }
@@ -786,17 +823,24 @@
     if (state.currentVideo?.id !== videoId) return;
     try {
       await persistSubtitleStyle();
+      if (layoutEditor) await layoutEditor.flush();
       if (state.currentVideo?.id !== videoId) return;
+      const currentClip = state.manifest?.clips.find((clip) => clip.id === clipId);
+      if (quality === "final" && (!optionsMatch(currentClip?.preview_options)
+          || (approvedPreviewId && currentClip?.preview_options?.render_id !== approvedPreviewId)))
+        throw new Error("O layout ou a prévia mudou. Gere e aprove uma nova prévia antes de exportar.");
       showNotice(`Renderizando ${quality === "preview" ? "previa 720p" : "final 1080p"}...`, "info");
       const started = await api(`/api/videos/${videoId}/render/${quality}`, {
         method: "POST",
         body: JSON.stringify({
           clip_id: clipId,
           layout: $("#layout").value,
+          ...(layoutEditor ? {layout_config:layoutEditor.getConfig()} : {}),
           subtitles: $("#burn-subs").checked,
           subtitle_style: subtitleStyle(),
           approved_selection: true,
           approved_preview: quality === "final" && approvedPreview,
+          approved_preview_id: quality === "final" ? approvedPreviewId : null,
         }),
       });
       await pollTask(started.task_id);

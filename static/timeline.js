@@ -13,6 +13,7 @@
   let toastTimer = null;
   let styleSaveTimer = null, styleSavePromise = null, styleRevision = 0;
   let transcriptRequest = 0, exportsRequest = 0, transcriptRefreshTimer = null;
+  let layoutEditor = null;
   const styleStatus = document.createElement("p");
   styleStatus.id = "subtitle-save-status";
   styleStatus.className = "hint";
@@ -232,24 +233,29 @@
     updateApproval();
   }
   function exportMatches(meta, options = currentOptions()) {
+    if (layoutEditor && !layoutEditor.isReady()) return false;
     return Boolean(meta && meta.version === state.timeline?.version && meta.layout === options.layout &&
-      meta.subtitles === options.subtitles && sameStyle(normalizedStyle(meta.subtitle_style), options.subtitle_style));
+      meta.subtitles === options.subtitles && (!window.LayoutEditor || window.LayoutEditor.same(meta.layout_config, options.layout_config)) &&
+      (!options.subtitles || sameStyle(normalizedStyle(meta.subtitle_style), options.subtitle_style)));
   }
   function renderedUrl(quality, meta) {
-    return `/api/videos/${videoId}/timeline/rendered/${quality}?render_id=${encodeURIComponent(meta.render_id || `v${meta.version}`)}`;
+    return `/api/videos/${videoId}/timeline/rendered/${quality}${meta.render_id ? `?render_id=${encodeURIComponent(meta.render_id)}` : ""}`;
   }
   function updateApproval() {
     const options = currentOptions();
     const preview = state.exports.preview;
     const matching = exportMatches(preview, options);
     const busy = Boolean(state.rendering || state.transcribing || state.transcriptState.status === "running");
-    $("#render-preview").disabled = busy || !state.timeline || !state.styleLoaded || !options.subtitle_style || !$("#approve-selection").checked;
+    $("#render-preview").disabled = busy || !state.timeline || !state.styleLoaded || !options.subtitle_style
+      || (layoutEditor && !layoutEditor.isReady()) || !$("#approve-selection").checked;
     $("#approve-preview").disabled = busy || !matching;
     if (!matching) $("#approve-preview").checked = false;
     $("#render-final").disabled = busy || !matching || !$("#approve-preview").checked;
     const layouts = {blur:"fundo desfocado", fit:"vídeo com bordas", crop:"recorte central"};
+    const compositions = {split:"duas telas", split_caption:"rosto, legenda e jogo", pip:"rosto sobre o vídeo"};
+    const layoutLabel = compositions[preview?.layout_config?.mode] || layouts[preview?.layout];
     if (state.rendering !== "preview") $("#preview-status").textContent = matching
-      ? `Prévia de ${fmtTime(preview.probe?.duration)} disponível: ${layouts[preview.layout] || "vertical"}${preview.subtitles ? ", com legendas" : ""}.`
+      ? `Prévia de ${fmtTime(preview.probe?.duration)} disponível: ${layoutLabel || "vídeo"} · ${preview.layout_config?.aspect || "9:16"}${preview.subtitles ? ", com legendas" : ""}.`
       : preview ? "Configuração alterada. Gere uma nova prévia para revisar." : "Prévia ainda não gerada para esta montagem.";
     $("#preview-link").classList.toggle("hidden", !matching);
     $("#preview-video").classList.toggle("hidden", !matching);
@@ -269,13 +275,14 @@
     const freshFinal = exportMatches(final, options);
     $("#final-link").classList.toggle("hidden", !freshFinal);
     if (state.rendering !== "final") $("#final-status").textContent = freshFinal
-      ? `Vídeo final de ${fmtTime(final.probe?.duration)} disponível em 1080 × 1920.`
+      ? `Vídeo final de ${fmtTime(final.probe?.duration)} disponível em ${final.probe?.width || (final.layout_config?.aspect === "16:9" ? 1920 : 1080)} × ${final.probe?.height || (final.layout_config?.aspect === "16:9" ? 1080 : 1920)}.`
       : matching ? "Prévia pronta; revise o vídeo acima e confirme a aprovação." : "Gere uma prévia nesta configuração para liberar o final.";
     if (freshFinal) $("#final-link").href = renderedUrl("final", final);
     else $("#final-link").removeAttribute("href");
   }
   function currentOptions() {
-    return {layout:$("#export-layout").value, subtitles:$("#export-subtitles").checked, subtitle_style:readStyle()};
+    return {layout:$("#export-layout").value, subtitles:$("#export-subtitles").checked, subtitle_style:readStyle(),
+      ...(layoutEditor ? {layout_config:layoutEditor.getConfig()} : {})};
   }
   async function exportTimeline(quality) {
     if (state.rendering || state.transcribing) return;
@@ -287,6 +294,7 @@
     updateTranscriptionButton();
     try {
       await flushStyle();
+      if (layoutEditor) await layoutEditor.flush();
       const options = currentOptions();
       if (quality === "final" && (!exportMatches(state.exports.preview, options) || !$("#approve-preview").checked))
         throw new Error("Gere e aprove uma prévia com estas opções antes de exportar o vídeo final.");
@@ -294,6 +302,7 @@
       const result = await api(`/api/videos/${videoId}/timeline/render/${quality}`, {method:"POST", body:JSON.stringify({
         ...options, approved_selection:$("#approve-selection").checked,
         approved_preview:$("#approve-preview").checked,
+        approved_preview_id:quality === "final" ? state.exports.preview?.render_id || null : null,
       })});
       await pollTask(result.task_id, (message) => { status.textContent = message; });
       await loadExports();
@@ -466,6 +475,15 @@
   for (const selector of ["#approve-selection", "#approve-preview"])
     $(selector).addEventListener("change", updateApproval);
   for (const input of styleInputs) input.addEventListener("input", styleChanged);
+  for (const link of document.querySelectorAll('a[href="/"]')) link.addEventListener("click", async (event) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    try {
+      if (state.styleLoaded) await flushStyle();
+      if (layoutEditor?.isReady()) await layoutEditor.flush();
+      window.location.assign("/");
+    } catch (error) { notice(`Não foi possível salvar antes de sair: ${error.message}`, "error"); }
+  });
 
   async function init() {
     if (!videoId) return notice("Identificador de vídeo inválido.", "error");
@@ -480,6 +498,14 @@
       updateTranscriptionButton();
       $("#add-end").value = Math.min(15, state.duration).toFixed(1);
       await loadTranscript();
+      if (window.LayoutEditor) {
+        layoutEditor = window.LayoutEditor.create({container:"#layout-editor", videoId, layoutSelect:"#export-layout",
+          onChange:() => { $("#approve-preview").checked = false; updateApproval(); },
+          getSubtitles:() => $("#export-subtitles").checked,
+          getTime:() => video.currentTime || 0,
+          onPresetSubtitles:(checked) => { $("#export-subtitles").checked = checked && state.words.length > 0; updateApproval(); }});
+        await layoutEditor.load();
+      }
       await loadExports();
     } catch (error) {
       notice(`Não foi possível carregar o projeto: ${error.message}`, "error");

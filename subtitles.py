@@ -1,7 +1,7 @@
 """Safe subtitle documents and a single style contract for preview and export.
 
-Font sizes use the 1080 x 1920 export canvas. ASS PlayRes keeps exactly the same
-relative size in a 720 x 1280 preview; SRT and WebVTT remain portable text tracks.
+Font sizes use the full-resolution canvas in the selected orientation. ASS scales
+the same document to the preview. SRT and WebVTT remain portable text tracks.
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import tempfile
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from composition import caption_anchor, normalize_layout_config, output_dimensions
 
 SUBTITLE_FONTS = (
     "DejaVu Sans", "DejaVu Serif", "Liberation Sans", "Liberation Serif", "Noto Sans",
@@ -153,18 +155,27 @@ def _fmt_ass(seconds: float) -> str:
 
 
 def write_styled_ass(source_srt: Path, destination: Path,
-                     style: dict | SubtitleStyle | None = None) -> None:
+                     style: dict | SubtitleStyle | None = None, *, layout_config=None) -> None:
     settings = normalize_subtitle_style(style)
+    config = normalize_layout_config(layout_config)
+    width, height = output_dimensions("final", config["aspect"])
+    anchor = caption_anchor(config, width, height)
+    alignment = 8 if config["caption_position"] == "top" else 2
+    margin = round(height * 112 / 1920)
+    placement = ""
+    if anchor is not None:
+        alignment = 5
+        placement = r"{\an5\pos(%d,%d)}" % anchor
     rgb = settings["color"][1:]
     color = "&H00" + rgb[4:6] + rgb[2:4] + rgb[0:2]
     header = (
-        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
+        f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\n"
         "WrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{settings['font_family']},{settings['font_size']},{color},"
-        "&H000000FF,&H00181210,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,64,64,112,1\n\n"
+        f"&H000000FF,&H00181210,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,{alignment},64,64,{margin},1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     events = []
@@ -173,13 +184,13 @@ def write_styled_ass(source_srt: Path, destination: Path,
         # equivalents preserve readable punctuation without executing overrides.
         literal = cue["text"].translate(str.maketrans({"{": "｛", "}": "｝", "\\": "＼"}))
         events.append(f"Dialogue: 0,{_fmt_ass(cue['start'])},{_fmt_ass(cue['end'])},"
-                      f"Default,,0,0,0,,{literal}\n")
+                      f"Default,,0,0,0,,{placement}{literal}\n")
     Path(destination).write_text(header + "".join(events), encoding="utf-8")
 
 
 @contextmanager
 def prepared_ass(source_srt: Path | None, directory: Path,
-                 style: dict | SubtitleStyle | None = None):
+                 style: dict | SubtitleStyle | None = None, *, layout_config=None):
     """Yield a controlled basename; no user path is interpolated into FFmpeg."""
     normalize_subtitle_style(style)
     if source_srt is None:
@@ -189,7 +200,7 @@ def prepared_ass(source_srt: Path | None, directory: Path,
                                      dir=str(directory), delete=False) as file:
         destination = Path(file.name)
     try:
-        write_styled_ass(source_srt, destination, style)
+        write_styled_ass(source_srt, destination, style, layout_config=layout_config)
         yield destination.name
     finally:
         destination.unlink(missing_ok=True)

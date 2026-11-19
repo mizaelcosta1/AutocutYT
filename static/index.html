@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#08121d">
-  <title>AutoClips AI Studio v0.7.4</title>
+  <title>AutoClips AI Studio v0.7.5</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/layout-editor.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
@@ -19,12 +20,12 @@
     <button class="nav" data-tab="connections"><span aria-hidden="true">◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="storage-dot" aria-hidden="true"></div><div><b>Armazenamento</b><p id="storage-info">Consultando espaço disponível...</p></div></div>
-    <div class="sidebar-foot">AutoClips Studio · v0.7.4<br><a href="/logout">Sair da conta</a></div>
+    <div class="sidebar-foot">AutoClips Studio · v0.7.5<br><a href="/logout">Sair da conta</a></div>
   </aside>
   <div class="main-wrap">
     <header class="topbar">
       <div class="mobile-brand"><span aria-hidden="true">▶</span> <b>AutoClips AI</b></div>
-      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.4</span>
+      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.5</span>
       <div class="platforms" aria-label="Plataformas compatíveis"><span class="pill"><i class="dot tw" aria-hidden="true"></i>Twitch</span><span class="pill"><i class="dot yt" aria-hidden="true"></i>YouTube</span><span class="pill"><i class="dot kick" aria-hidden="true"></i>Kick</span></div>
     </header>
     <main id="main-content" tabindex="-1">
@@ -115,10 +116,11 @@
                 <button class="primary full" id="btn-analyze">Encontrar momentos</button><p class="hint" id="analysis-note">A transcrição permite avaliar as falas. Sem ela, as sugestões usam variações do áudio.</p>
               </div>
               <div class="panel export-settings">
-                <div class="pane-top"><h3>Preparar exportação</h3><span class="fine">VERTICAL · 9:16</span></div>
+                <div class="pane-top"><h3>Preparar exportação</h3></div>
+                <div id="layout-editor" class="layout-editor"></div>
                 <label class="field-label" for="layout">ENQUADRAMENTO</label><select id="layout"><option value="blur">Vídeo inteiro + fundo desfocado</option><option value="fit">Vídeo inteiro com bordas</option><option value="crop">Recorte central</option></select>
                 <label class="checkline"><input id="burn-subs" type="checkbox"> Incluir legendas no vídeo</label><p class="hint">Gere uma prévia no clipe abaixo. Depois de assistir e aprovar, exporte o vídeo final.</p>
-                <details class="advanced"><summary>Qualidade dos arquivos</summary><p class="hint">Prévia: 720 × 1280. Arquivo final: 1080 × 1920. Mudou o corte, o enquadramento ou a legenda? Gere uma nova prévia para revisar.</p></details>
+                <details class="advanced"><summary>Qualidade dos arquivos</summary><p class="hint">Prévia em 720p. Arquivo final em 1080p. Mudou o corte, o enquadramento ou a legenda? Gere uma nova prévia para revisar.</p></details>
               </div>
             </aside>
           </div>
@@ -179,6 +181,7 @@
 <nav class="mobile-tabs" aria-label="Navegação do estúdio"><button data-tab="sources" class="active"><span aria-hidden="true">↥</span><span>Início</span></button><button data-tab="library"><span aria-hidden="true">□</span><span>Biblioteca</span></button><button data-tab="editor"><span aria-hidden="true">✂</span><span>Editor</span></button><button data-tab="connections"><span aria-hidden="true">◎</span><span>Conexões</span></button></nav>
 <script src="/static/hls.min.js"></script>
 <script src="/static/live-preview.js"></script>
+<script src="/static/layout-editor.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/connections.js"></script>
 </body>

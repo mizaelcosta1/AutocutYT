@@ -28,7 +28,8 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.setenv('AUTOCLIPS_DATA_ROOT', str(tmp_path / 'data'))
     for key in ('AUTOCLIPS_GOOGLE_CLIENT_ID', 'AUTOCLIPS_GOOGLE_CLIENT_SECRET', 'AUTOCLIPS_SESSION_SECRET'):
         monkeypatch.delenv(key, raising=False)
-    for name in ('studio_auth', 'server'):
+    previous_modules = {name: sys.modules.get(name) for name in ('studio_auth', 'server')}
+    for name in previous_modules:
         sys.modules.pop(name, None)
     server = importlib.import_module('server')
     source = server.MEDIA / 'source.mp4'
@@ -49,6 +50,11 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'faster_whisper', SimpleNamespace())
     yield server, TestClient(server.app), video_id, words
     server.POOL.shutdown(wait=True)
+    for name, previous in previous_modules.items():
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
 
 
 def test_post_recording_transcription_is_independent_of_cut_analysis(studio):
