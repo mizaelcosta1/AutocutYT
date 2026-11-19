@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0d0d14">
-  <title>AutoClips AI Studio v0.6.0</title>
+  <title>AutoClips AI Studio v0.7.1</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,11 +17,11 @@
     <button class="nav" data-tab="connections"><span>◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="live-dot"></div><div><b>Est&uacute;dio H&iacute;brido / Cloud</b><p id="storage-info">Verificando armazenamento...</p></div></div>
-    <div class="sidebar-foot">v0.7.0 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
+    <div class="sidebar-foot">v0.7.1 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
   </aside>
 
   <div class="main-wrap">
-    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.6.0</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
+    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.7.1</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
     <main>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="sources" class="page active">
@@ -47,6 +47,8 @@
         <div class="section-heading connection-heading"><div><span class="overline">PUBLICAÇÃO E CAPTURA</span><h2>Suas contas</h2></div><button id="reload-social" class="outline" type="button">Atualizar</button></div>
         <div id="social-grid" class="source-grid social-grid"><article class="panel"><p>Consultando as plataformas...</p></article></div>
         <div class="connection-help">Para entrar nas contas, o administrador registra <b>o aplicativo AutoClips</b> uma vez nas variáveis de ambiente. Depois, todos os acessos são realizados pelo login oficial, sem digitar senha ou secret nesta tela. <b>Nenhum clipe será publicado sem sua aprovação explícita.</b></div>
+        <div class="section-heading connection-heading"><div><span class="overline">WORKFLOWS CRIATIVOS</span><h2>Comfy Cloud</h2><p class="hint">Abra seus workflows salvos no editor oficial do Comfy Cloud. A execucao ocorre la, com a sua conta e seus limites de creditos; o AutoClips nao envia arquivos nem gera midia automaticamente.</p></div><button id="reload-comfy" class="outline" type="button">Atualizar workflows</button></div>
+        <div id="comfy-workflows" class="comfy-workflows" aria-live="polite"><article class="panel"><p class="hint">Consultando workflows configurados...</p></article></div>
         <div class="section-heading connection-heading"><div><span class="overline">MULTI-MODELOS</span><h2>Seus provedores de IA</h2></div></div>
         <div class="source-grid ai-providers-grid">
           <article class="panel provider-panel">

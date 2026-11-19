@@ -1,4 +1,4 @@
-"""AutoClips Studio API v0.7.0: local-first, cloud-deployable and mobile-friendly.
+"""AutoClips Studio API v0.7.1: local-first, cloud-deployable and mobile-friendly.
 
 Start: uvicorn server:app --host 127.0.0.1 --port 8765
 For cloud / LAN deployment, set AUTOCLIPS_PASSWORD and bind to 0.0.0.0.
@@ -35,7 +35,7 @@ import studio_auth
 from integrations import (Vault, build_router, generate_clip_metadata, get_selected,
                           rerank_remote, upload_youtube_video)
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -50,6 +50,7 @@ CHUNK_SIZE = 8 * 1024 * 1024
 LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autoclips")
 LIVE: dict[str, dict] = {}
+PENDING_PUBLISH: set[tuple[str, str]] = set()
 PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 
 app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None)
@@ -296,11 +297,42 @@ def config():
         "streamlink": bool(shutil.which("streamlink")),
         "ytdlp": bool(shutil.which("yt-dlp")),
         "transcribe_available": has_whisper,
+        "ai_titles_ready": get_selected(CONNECTION_VAULT, "titles") is not None,
         "chunksize": CHUNK_SIZE,
         "upload_limit": None,
         "storage_free_bytes": shutil.disk_usage(ROOT).free,
         "directory": str(ROOT),
     }
+
+
+@app.get("/api/creative/workflows")
+def comfy_cloud_workflows():
+    """Read-only Comfy Cloud launcher; never spends credits or shares app secrets.
+
+    The ChatGPT MCP OAuth token is NOT available to this FastAPI service. The
+    user opens their saved workflow inside Comfy Cloud, authenticated there.
+    """
+    raw = os.getenv("AUTOCLIPS_COMFY_WORKFLOWS_JSON", "[]")
+    try:
+        entries = json.loads(raw)
+    except (ValueError, TypeError):
+        entries = []
+    if not isinstance(entries, list):
+        entries = []
+    workflows = []
+    for entry in entries[:20]:
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title", "")
+        workflow_id = entry.get("workflow_id", "")
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
+            continue
+        if not isinstance(workflow_id, str) or not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", workflow_id, re.I
+        ):
+            continue
+        workflows.append({"title": title.strip(), "url": "https://cloud.comfy.org/#" + workflow_id.lower()})
+    return {"configured": bool(workflows), "execution": "external", "workflows": workflows}
 
 
 # --- Timeline editing (independent OpenChatCut-inspired extension) ---
@@ -520,6 +552,11 @@ def upload_start(req: UploadStart):
     safe = clean_filename(req.filename)
     if Path(safe).suffix.lower() not in MEDIA_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Formato nao suportado")
+    free = shutil.disk_usage(ROOT).free
+    # Keep space for the project JSON, thumbnails and at least one render.
+    reserve = max(8 * 1024 * 1024, min(64 * 1024 * 1024, free // 5))
+    if req.size > max(0, free - reserve):
+        raise HTTPException(status_code=413, detail="Espaco insuficiente para o video e sua edicao. Libere espaco ou use um volume maior.")
     upload_id = uuid.uuid4().hex
     folder = UPLOADS / upload_id
     folder.mkdir()
@@ -614,9 +651,12 @@ def import_vod(req: VodDownloadRequest):
         raise HTTPException(status_code=400, detail="Confirme que tem direito de editar este video")
     if not shutil.which("yt-dlp"):
         raise HTTPException(status_code=503, detail="yt-dlp nao instalado no servidor")
-    parsed = urlparse(req.url.strip())
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise HTTPException(status_code=400, detail="Informe uma URL HTTPS valida")
+    # Exactly the providers advertised by the VOD import form.
+    # Reject arbitrary URLs before scheduling yt-dlp (network access).
+    try:
+        platform(req.url.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if req.transcribe_after:
         try:
             import faster_whisper  # noqa: F401
@@ -798,7 +838,10 @@ def update_clips(video_id: str, req: UpdateClips):
         known = {c["id"]: c for c in manifest["clips"]}
         if set(x.id for x in req.clips) != set(known):
             raise HTTPException(status_code=400, detail="Envie todos os clipes existentes")
+        if any((video_id, c.id) in PENDING_PUBLISH for c in req.clips):
+            raise HTTPException(status_code=409, detail="Aguarde o envio ao YouTube terminar antes de editar")
         duration = manifest["probe"]["duration"]
+        stale_renders = []
         for c in req.clips:
             if not (0 <= c.start < c.end <= duration + .01):
                 raise HTTPException(status_code=400, detail="Um clipe esta fora dos limites")
@@ -806,16 +849,32 @@ def update_clips(video_id: str, req: UpdateClips):
             changed = round(c.start, 3) != old["start"] or round(c.end, 3) != old["end"]
             old.update(title=c.title, start=round(c.start, 3), end=round(c.end, 3), selected=c.selected)
             if changed:
-                old.pop("preview", None)
-                old.pop("final", None)
+                for stage in ("preview", "final"):
+                    previous_render = old.pop(stage, None)
+                    if isinstance(previous_render, dict):
+                        for field in ("path", "subtitles"):
+                            candidate = previous_render.get(field)
+                            if isinstance(candidate, str):
+                                render_path = Path(candidate).resolve()
+                                if render_path.is_relative_to(work.resolve()) and render_path.suffix.lower() in {".mp4", ".srt"}:
+                                    stale_renders.append(render_path)
+                # Keep evidence of past uploads, but never show it as the
+                # publication of the newly edited clip.
+                previous_upload = old.pop("youtube", None)
+                if previous_upload:
+                    old.setdefault("youtube_history", []).append(previous_upload)
                 old["status"] = "proposed_only"
         write_json(work / "manifest.json", manifest)
+        for stale_path in stale_renders:
+            stale_path.unlink(missing_ok=True)
     return {"ok": True}
 
 
 @app.delete("/api/videos/{video_id}/clips/{clip_id}")
 def delete_clip(video_id: str, clip_id: str):
     with LOCK:
+        if (video_id, clip_id) in PENDING_PUBLISH:
+            raise HTTPException(status_code=409, detail="Aguarde o envio ao YouTube terminar antes de remover")
         manifest, work, _ = get_manifest(video_id)
         idx = next((i for i, c in enumerate(manifest["clips"]) if c["id"] == clip_id), None)
         if idx is None:
@@ -867,6 +926,11 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
         if not clip:
             raise HTTPException(status_code=404, detail="Clipe nao encontrado")
+        if clip.get("youtube", {}).get("youtube_video_id"):
+            raise HTTPException(status_code=409, detail="Clipe ja enviado ao YouTube; edite e renderize uma nova versao para publicar outro video")
+        publish_key = (video_id, clip_id)
+        if publish_key in PENDING_PUBLISH:
+            raise HTTPException(status_code=409, detail="Ja existe um envio em andamento para este clipe")
         final_info = clip.get("final")
         if not isinstance(final_info, dict) or not final_info.get("path"):
             raise HTTPException(status_code=409, detail="Exporte o video final em 1080p antes de enviar ao YouTube")
@@ -874,25 +938,35 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         title = (req.title or clip.get("title") or "Corte AutoClips #Shorts").strip()
         desc = (req.description or clip.get("description") or clip.get("excerpt") or "Editado no AutoClips AI Studio").strip()
         tags = req.tags or clip.get("tags") or ["Shorts", "AutoClips"]
+        PENDING_PUBLISH.add(publish_key)
 
     def job():
-        res = upload_youtube_video(
-            CONNECTION_VAULT,
-            final_path,
-            title=title,
-            description=desc,
-            privacy_status=req.privacy_status,
-            tags=tags,
-        )
-        with LOCK:
-            m, w, _ = get_manifest(video_id)
-            cur = next((c for c in m["clips"] if c["id"] == clip_id), None)
-            if cur:
-                cur["youtube"] = res
-                write_json(w / "manifest.json", m)
-        return res
+        try:
+            res = upload_youtube_video(
+                CONNECTION_VAULT,
+                final_path,
+                title=title,
+                description=desc,
+                privacy_status=req.privacy_status,
+                tags=tags,
+            )
+            with LOCK:
+                m, w, _ = get_manifest(video_id)
+                cur = next((c for c in m["clips"] if c["id"] == clip_id), None)
+                if cur:
+                    cur["youtube"] = res
+                    write_json(w / "manifest.json", m)
+            return res
+        finally:
+            with LOCK:
+                PENDING_PUBLISH.discard(publish_key)
 
-    return {"task_id": schedule("publish-youtube", job)}
+    try:
+        return {"task_id": schedule("publish-youtube", job)}
+    except Exception:
+        with LOCK:
+            PENDING_PUBLISH.discard(publish_key)
+        raise
 
 
 def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: bool) -> dict:

@@ -1,0 +1,21 @@
+# Runtime secrets and local media must never enter the public repository.
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+local-data/
+outputs/
+upload_sessions/
+recordings/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.ts
+*.log
+.DS_Store

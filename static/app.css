@@ -587,3 +587,9 @@ button.full { width: 100%; }
   #editor > .section-heading { flex-wrap: wrap; align-items: center; }
   #btn-advanced-timeline { flex: 1 1 100%; }
 }
+
+/* Comfy Cloud is a workflow launcher, not an in-app generation form. */
+.comfy-workflows {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:14px;margin-bottom:24px}
+.comfy-workflows .panel {min-width:0}
+.comfy-launch {display:block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 12px;border-radius:10px}
+.comfy-workflows h3 {overflow-wrap:anywhere}

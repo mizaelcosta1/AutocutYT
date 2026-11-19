@@ -106,6 +106,22 @@
     }
   };
 
+  async function loadComfyWorkflows() {
+    const root = $("#comfy-workflows");
+    if (!root) return;
+    try {
+      const data = await api("/api/creative/workflows");
+      const items = data.workflows || [];
+      root.innerHTML = items.length
+        ? items.map((item) => `<article class="panel"><div class="pane-top"><h3>${esc(item.title)}</h3><span class="fine">COMFY CLOUD</span></div><p class="hint">Abre o workflow no Comfy Cloud, na sua conta. Executar la pode consumir creditos.</p><a class="primary comfy-launch" target="_blank" rel="noopener noreferrer" href="${esc(item.url)}">Abrir workflow no Comfy Cloud</a></article>`).join("")
+        : `<article class="panel"><p class="hint">Nenhum workflow configurado para este Studio. A conexao MCP do ChatGPT nao equivale a uma credencial do servidor Railway.</p></article>`;
+    } catch (error) {
+      root.textContent = `Nao foi possivel consultar workflows: ${error.message}`;
+    }
+  }
+
+  $("#reload-comfy")?.addEventListener("click", loadComfyWorkflows);
+
   let cachedProviders = [];
 
   async function loadProviders() {
@@ -250,6 +266,7 @@
       });
       feedback(`Modelo ${model_id} salvo para ${stage}!`);
       loadProviders();
+      window.refreshStudioCapabilities?.();
     } catch (err) {
       feedback(err.message, true);
     }
@@ -260,6 +277,7 @@
   window.reloadConnections = () => {
     loadSocialAccounts();
     loadProviders();
+    loadComfyWorkflows();
   };
 
   window.reloadConnections();

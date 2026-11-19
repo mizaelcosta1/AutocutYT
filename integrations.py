@@ -469,10 +469,14 @@ def upload_youtube_video(
 
         chunk_size = 4 * 1024 * 1024
         offset = 0
+        retries_without_progress = 0
         result_payload = None
         with video_path.open("rb") as fh:
             while offset < file_size:
-                chunk = fh.read(chunk_size)
+                # The server can acknowledge only PART of a chunk with HTTP 308.
+                # Always seek to its actual next byte before reading again.
+                fh.seek(offset)
+                chunk = fh.read(min(chunk_size, file_size - offset))
                 if not chunk:
                     break
                 end_byte = offset + len(chunk) - 1
@@ -490,10 +494,22 @@ def upload_youtube_video(
                     break
                 if put_resp.status_code == 308:
                     range_hdr = put_resp.headers.get("Range", "")
-                    if "-" in range_hdr:
-                        offset = int(range_hdr.split("-")[-1]) + 1
+                    if range_hdr:
+                        match = re.fullmatch(r"bytes=0-(\d+)", range_hdr)
+                        if not match:
+                            raise ValueError("YouTube retornou Range invalido na retomada")
+                        acknowledged = int(match.group(1)) + 1
+                        if not 0 <= acknowledged <= end_byte + 1:
+                            raise ValueError("YouTube retornou progresso invalido no upload")
+                        next_offset = acknowledged
                     else:
-                        offset += len(chunk)
+                        # An absent Range on a 308 means the server has not
+                        # confirmed any bytes yet, not that the chunk succeeded.
+                        next_offset = 0
+                    retries_without_progress = (retries_without_progress + 1 if next_offset <= offset else 0)
+                    if retries_without_progress >= 4:
+                        raise ValueError("YouTube nao confirmou progresso apos varias tentativas")
+                    offset = next_offset
                     continue
                 raise ValueError(f"Falha no envio do bloco ao YouTube (HTTP {put_resp.status_code}): {put_resp.text[:200]}")
 

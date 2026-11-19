@@ -1,4 +1,4 @@
-# AutoClips AI Studio v0.7.0 — Google Login + Timeline
+# AutoClips AI Studio v0.7.1 — Google Login + Timeline + Use-case QA
 
 **Base:** código v0.5.0 fornecido pelo usuário, preservando upload, VOD, lives, clipes automáticos, OAuth de canal e publicação aprovada no YouTube; agora autenticação de acesso ao Studio via Google OIDC (separada da autorização YouTube).
 
@@ -93,3 +93,19 @@ Sem configuração completa, a página externa mostra uma mensagem de configura�
 **Privacidade:** o repositório público não pode conter credenciais, senha ou tokens. Acesso autorizado apenas para emails da allowlist. O token YouTube continua sendo mantido no cofre criptografado sobre volume persistente.
 
 **Validação:** testes locais com OAuth simulado, sem conexão a conta Google real. Testar OAuth e upload YouTube com uma conta real antes de declarar produção totalmente funcional.
+
+## Auditoria de ações, limites e Comfy Cloud (v0.7.1)
+
+- A edição e a geração de título **sem um modelo de IA configurado** são explicitamente rotuladas como sugestão heurística; não há geração paga implícita.
+- Importar VOD aceita somente links HTTPS normais de Twitch, YouTube e Kick. Upload grande demais recebe erro antes de iniciar a transferência, preservando espaço para renderização no volume.
+- As renderizações de prévia e final não podem usar o intervalo antigo quando um ajuste foi rejeitado. A exportação final requer aprovação explícita da prévia na versão atual.
+- Envio ao YouTube mantém consentimento expresso, impede publicação duplicada e protege o clipe de edição/exclusão enquanto o envio está pendente. Reenvio resumível respeita bytes efetivamente confirmados pelo Google.
+- Ao mudar o intervalo, o serviço remove arquivos de renderização **gerenciados** que perderam validade. Não apaga mídia de caminhos externos.
+- Em **Conexões e modelos**, um catálogo de workflows Comfy Cloud pode ser configurado com `AUTOCLIPS_COMFY_WORKFLOWS_JSON` no Railway, por exemplo, `[ {"title":"Frame vertical 9:16","workflow_id":"UUID-DO-WORKFLOW"} ]`. O botão **Abrir workflow** leva ao canvas oficial da sua conta Comfy Cloud. **Não** executa geração por dentro do AutoClips; OAuth do MCP do ChatGPT não autoriza o backend hospedado e créditos podem estar indisponíveis.
+- Transcrição local exige `faster-whisper` (instalação opcional, não fornecida pelo Dockerfile de produção) e o modelo Whisper; os respectivos controles sinalizam indisponibilidade no servidor sem ele.
+- O volume Railway utilizado é de 500 MB, inadequado para produção prolongada com lives extensas, upload de vários vídeos grandes ou múltiplas exportações; utilize armazenamento de objetos/VPS ou amplie o volume e teste os limites operacionais antes de abrir o serviço a outros usuários.
+- Nenhuma parte do OpenChatCut AGPL-3.0 foi copiada neste código. A interface oferece somente funções explicitamente listadas; ainda não fornece faixas de áudio independentes, motion graphics avançado, agente MCP remoto ou publicação automática multirrede.
+
+**Matriz de botões, testes e ressalvas:** consulte [`qa/QA_REPORT_2026-11-19.md`](qa/QA_REPORT_2026-11-19.md).
+
+Testar localmente a release: `python -m pytest -q tests` (suite backend) e `python qa/smoke_browser.py` (Chromium + FastAPI TestClient + FFmpeg; não requer login ou serviços pagos). `pytest` e `playwright` são ferramentas de teste, não dependências do container de produção; instale-os num ambiente de QA quando for executar o smoke. O teste Chromium contorna a restrição de loopback da sandbox redirecionando Fetch para TestClient e não prova navegação real ao Railway.

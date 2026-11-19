@@ -70,6 +70,7 @@
     $$(".page").forEach((p) => p.classList.toggle("active", p.id === tab));
     $$("[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
     if (tab === "library") loadLibrary();
+    if (tab === "editor") loadConfig();
     if (tab === "connections" && window.reloadConnections) window.reloadConnections();
   }
 
@@ -93,6 +94,16 @@
     try {
       const cfg = await api("/api/config");
       state.config = cfg;
+      $$(".c-gen-meta").forEach((btn) => { btn.textContent = cfg.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"; });
+      const transcribeCheckbox = $("#transcribe");
+      const cloudCheckbox = $("#cloud-model");
+      if (transcribeCheckbox && !cfg.transcribe_available) {
+        transcribeCheckbox.checked = false;
+        transcribeCheckbox.disabled = true;
+        transcribeCheckbox.title = "faster-whisper nao instalado no servidor";
+        if (cloudCheckbox) { cloudCheckbox.checked = false; cloudCheckbox.disabled = true; }
+        $("#analysis-note").textContent = "Transcricao local indisponivel neste servidor (faster-whisper nao instalado). A analise usa picos de audio; nao envia nada para a nuvem.";
+      }
       const freeStr = fmtBytes(cfg.storage_free_bytes);
       const storageEl = $("#storage-info");
       if (storageEl) {
@@ -502,11 +513,11 @@
             <div class="btn-row" style="margin-top:10px">
               <button class="outline" onclick="window._previewJump(${c.start})">&#9654; Ver no player</button>
               <button class="outline" onclick="window._saveAllClips()">Salvar ajustes</button>
-              <button class="outline" onclick="window._genMeta('${c.id}')">Gerar Titulo IA</button>
+              <button class="outline c-gen-meta" onclick="window._genMeta('${c.id}')">${state.config?.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"}</button>
               <button class="primary" onclick="window._renderClip('${c.id}', 'preview')">1. Gerar Previa 720p</button>
               ${
                 c.preview_url
-                  ? `<button class="primary" onclick="window._renderClip('${c.id}', 'final')">2. Aprovar &amp; Exportar 1080p</button>`
+                  ? `<label class="checkline"><input type="checkbox" class="c-preview-approve" onchange="window._approveClipPreview('${c.id}')"> Assisti a previa e aprovo esta versao para exportacao final.</label><button class="primary c-render-final" disabled onclick="window._renderClip('${c.id}', 'final')">2. Exportar final 1080p</button>`
                   : ""
               }
               <button class="danger" onclick="window._deleteClip('${c.id}')">Remover</button>
@@ -525,7 +536,9 @@
                         </select>
                       </label>
                       <div style="display:flex;align-items:flex-end">
-                        <button class="primary full" onclick="window._publishYouTube('${c.id}')">Enviar ao YouTube</button>
+                        ${c.youtube?.youtube_video_id
+                          ? `<span class="hint">Este corte ja foi enviado; edite e exporte outra versao para novo envio.</span>`
+                          : `<button class="primary full" onclick="window._publishYouTube('${c.id}')">Enviar ao YouTube</button>`}
                       </div>
                     </div>
                     <label class="checkline"><input type="checkbox" class="c-yt-approve"> Confirmo que revisei este clipe e autorizo o envio oficial para o meu canal do YouTube.</label>
@@ -560,7 +573,7 @@
   };
 
   window._saveAllClips = async () => {
-    if (!state.currentVideo || !state.manifest) return;
+    if (!state.currentVideo || !state.manifest) return false;
     const cards = $$(".clip-card");
     const updated = cards.map((card) => {
       const id = card.dataset.clipId;
@@ -579,8 +592,10 @@
       });
       showNotice("Ajustes dos clipes salvos!", "ok");
       await loadManifest();
+      return true;
     } catch (err) {
       showNotice(err.message, "error");
+      return false;
     }
   };
 
@@ -597,9 +612,23 @@
     }
   };
 
+  window._approveClipPreview = (clipId) => {
+    const card = document.querySelector(`.clip-card[data-clip-id="${clipId}"]`);
+    if (!card) return;
+    const approved = Boolean(card.querySelector(".c-preview-approve")?.checked);
+    const finalButton = card.querySelector(".c-render-final");
+    if (finalButton) finalButton.disabled = !approved;
+  };
+
   window._renderClip = async (clipId, quality) => {
     if (!state.currentVideo) return;
-    await window._saveAllClips();
+    const card = document.querySelector(`.clip-card[data-clip-id="${clipId}"]`);
+    const approvedPreview = Boolean(card?.querySelector(".c-preview-approve")?.checked);
+    if (quality === "final" && !approvedPreview) {
+      return showNotice("Assista a previa e marque a aprovacao antes de exportar o final.", "error");
+    }
+    // Never render the OLD interval after a failed attempt to save edits.
+    if (!await window._saveAllClips()) return;
     try {
       showNotice(`Renderizando ${quality === "preview" ? "previa 720p" : "final 1080p"}...`, "info");
       const started = await api(`/api/videos/${state.currentVideo.id}/render/${quality}`, {
@@ -609,7 +638,7 @@
           layout: $("#layout").value,
           subtitles: $("#burn-subs").checked,
           approved_selection: true,
-          approved_preview: quality === "final",
+          approved_preview: quality === "final" && approvedPreview,
         }),
       });
       await pollTask(started.task_id);
