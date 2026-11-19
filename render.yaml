@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: autoclips-ai-studio
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: autoclips-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: AUTOCLIPS_DATA_ROOT
+        value: /data/autoclips
+      - key: AUTOCLIPS_PASSWORD
+        generateValue: true
+      - key: AUTOCLIPS_YOUTUBE_CLIENT_ID
+        sync: false
+      - key: AUTOCLIPS_YOUTUBE_CLIENT_SECRET
+        sync: false

@@ -1,0 +1,2 @@
+# Transcription happens locally and downloads a Whisper model on first use.
+faster-whisper

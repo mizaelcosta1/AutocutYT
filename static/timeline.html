@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101019">
+  <title>AutoClips Studio | Timeline</title>
+  <link rel="stylesheet" href="/static/timeline.css">
+</head>
+<body>
+<div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+<header class="topbar">
+  <a class="back" href="/" aria-label="Voltar ao AutoClips">← <span>AutoClips</span></a>
+  <div class="header-title"><span class="eyebrow">OFICINA DE MONTAGEM · v0.6.0</span><h1>Editor de timeline</h1><p id="project-title">Carregando projeto...</p></div>
+  <span class="state-tag">LOCAL · NÃO DESTRUTIVO</span>
+</header>
+<main class="workspace">
+  <div class="upper-grid">
+    <section class="panel player-panel" aria-label="Preview do projeto">
+      <div class="panel-head"><div><span class="eyebrow">01 · VISUALIZAÇÃO</span><h2>Monitor de vídeo</h2></div><span class="pill" id="time-indicator">00:00 / 00:00</span></div>
+      <div class="player-box"><video id="source-player" controls playsinline preload="metadata" aria-label="Reprodução do vídeo original"></video><span class="player-hint">Prévia dos trechos no original</span></div>
+      <div class="toolbar">
+        <button id="play-edit" class="primary">▶ Reproduzir montagem</button>
+        <button id="pause-edit" class="secondary">■ Parar montagem</button>
+        <span class="spacer"></span><span class="hint">O vídeo original permanece intacto.</span>
+      </div>
+      <div class="panel nested">
+        <div class="panel-head"><h3>Trecho selecionado</h3><span class="pill" id="selected-label">—</span></div>
+        <div class="trim-inputs">
+          <label>INÍCIO NO ORIGINAL (s)<input id="trim-start" type="number" step="0.1" min="0"></label>
+          <label>FIM NO ORIGINAL (s)<input id="trim-end" type="number" step="0.1" min="0"></label>
+        </div>
+        <div class="toolbar wrap">
+          <button id="save-trim" class="primary">Salvar recorte</button>
+          <button id="split-at-playhead" class="secondary">✂ Dividir no playhead</button>
+          <button id="move-left" class="secondary">← Mover</button>
+          <button id="move-right" class="secondary">Mover →</button>
+          <button id="remove-segment" class="danger">Excluir trecho</button>
+        </div>
+      </div>
+    </section>
+    <aside class="panel export-panel" aria-label="Exportação da montagem">
+      <div class="panel-head"><div><span class="eyebrow">02 · ENTREGA</span><h2>Exportar vídeo</h2></div><span class="pill purple">9:16</span></div>
+      <p class="hint">Render FFmpeg de todos os trechos, na ordem mostrada. A prévia precisa ser revisada antes do arquivo final.</p>
+      <label class="field">ENQUADRAMENTO<select id="export-layout"><option value="blur">Fundo desfocado</option><option value="fit">Vídeo inteiro com bordas</option><option value="crop">Recorte central</option></select></label>
+      <label class="check"><input id="export-subtitles" type="checkbox"> Incorporar legendas da transcrição (se disponíveis)</label>
+      <hr>
+      <label class="check"><input id="approve-selection" type="checkbox"> Revisei os cortes e autorizo gerar a prévia.</label>
+      <button id="render-preview" class="primary full">1 · Renderizar prévia 720p</button>
+      <p class="hint" id="preview-status">Prévia ainda não gerada.</p>
+      <video id="preview-video" class="result-video hidden" controls playsinline aria-label="Prévia renderizada"></video>
+      <a id="preview-link" class="download hidden" download="autoclips-previa.mp4">Baixar prévia MP4</a>
+      <hr>
+      <label class="check"><input id="approve-preview" type="checkbox"> Assisti à prévia e aprovo esta versão para exportação final.</label>
+      <button id="render-final" class="primary full" disabled>2 · Exportar final 1080p</button>
+      <p class="hint" id="final-status">Exportação final indisponível até aprovação da prévia.</p>
+      <a id="final-link" class="download hidden" download="autoclips-final.mp4">Baixar vídeo final MP4</a>
+      <div class="safety-note">Nenhum vídeo é publicado no YouTube automaticamente. A publicação continua exigindo confirmação no painel principal.</div>
+    </aside>
+  </div>
+
+  <section class="panel timeline-panel" aria-label="Timeline de edição">
+    <div class="panel-head"><div><span class="eyebrow">03 · EDIÇÃO NÃO DESTRUTIVA</span><h2>Timeline de cortes</h2><p class="hint">Toque em um trecho para selecionar, reorganizar ou dividir.</p></div>
+      <div class="toolbar"><button class="secondary" id="undo" disabled>↶ Desfazer</button><button class="secondary" id="redo" disabled>↷ Refazer</button></div>
+    </div>
+    <div class="timeline-stat"><span id="segment-count">0 trechos</span><span id="edited-time">00:00 editados</span><span id="timeline-version">Versão 1</span></div>
+    <div class="track-scroller">
+      <div class="track"><div class="track-label"><strong>V1</strong><span>Vídeo</span></div><div class="track-body"><div id="video-track" class="clips-track"></div></div></div>
+      <div class="track"><div class="track-label"><strong>A1</strong><span>Som original</span></div><div class="track-body"><div id="audio-track" class="audio-track">Áudio do vídeo acompanha os trechos • mixagem externa ainda não disponível</div></div></div>
+      <div class="track"><div class="track-label"><strong>C1</strong><span>Legendas</span></div><div class="track-body"><div id="caption-track" class="caption-track">Transcreva o vídeo para gerar legendas sincronizadas</div></div></div>
+    </div>
+    <div class="add-area">
+      <div><span class="eyebrow">INSERIR NOVO TRECHO DO ORIGINAL</span><p class="hint">Útil para VODs longos: escolha qualquer intervalo do vídeo original.</p></div>
+      <label>De (s)<input id="add-start" type="number" min="0" step="0.1" value="0"></label>
+      <label>Até (s)<input id="add-end" type="number" min="0" step="0.1" value="15"></label>
+      <button class="primary" id="add-segment">+ Adicionar trecho</button>
+      <button class="secondary" id="restore-project">Restaurar início</button>
+    </div>
+  </section>
+
+  <section class="panel transcript-panel" aria-label="Edição por transcrição">
+    <div class="panel-head"><div><span class="eyebrow">04 · CORTE POR TEXTO</span><h2>Transcrição e pausas</h2><p class="hint">Selecione uma palavra para ir até ela, ou insira uma janela de fala na montagem.</p></div><div class="toolbar"><button class="secondary" id="transcribe-local">Transcrever localmente</button><a id="download-srt" class="download hidden" download="legendas.srt">↓ Legendas SRT</a></div></div>
+    <div class="transcript-tools">
+      <label>BUSCAR PALAVRA NA GRAVAÇÃO<input id="word-search" type="search" placeholder="Ex.: caramba, gol, segredo..."></label>
+      <label>PAUSA MÍNIMA (s)<input id="pause-threshold" type="number" min="0.5" max="30" step="0.5" value="2"></label>
+      <button id="remove-pauses" class="secondary">Reduzir pausas longas</button>
+    </div>
+    <p id="transcript-info" class="hint">Buscando transcrição...</p>
+    <div id="transcript-words" class="word-list" aria-live="polite"></div>
+    <p class="hint">A limpeza automática só altera a montagem após seu clique. Requer uma transcrição local disponível.</p>
+  </section>
+  <footer>AutoClips AI Studio v0.6.0 · Implementação independente inspirada em fluxos do OpenChatCut · Editor de cortes sequenciais, não um mixer multifaixas completo.</footer>
+</main>
+<script src="/static/timeline.js"></script>
+</body></html>

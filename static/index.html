@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0d14">
+  <title>AutoClips AI Studio v0.6.0</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-icon">&#9654;</span><div><b>AutoClips<span class="accent"> AI</span></b><small>STUDIO</small></div></div>
+    <div class="side-label">EST&Uacute;DIO</div>
+    <button class="nav active" data-tab="sources"><span>&#9709;</span> Novos projetos</button>
+    <button class="nav" data-tab="library"><span>&#9633;</span> Minha biblioteca</button>
+    <button class="nav" data-tab="editor"><span>&#9986;</span> Editor de clipes</button>
+    <button class="nav" data-tab="connections"><span>◎</span> Conexões e modelos</button>
+    <div class="side-spacer"></div>
+    <div class="side-info"><div class="live-dot"></div><div><b>Est&uacute;dio H&iacute;brido / Cloud</b><p id="storage-info">Verificando armazenamento...</p></div></div>
+    <div class="sidebar-foot">v0.7.0 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.6.0</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
+    <main>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <section id="sources" class="page active">
+        <div class="hero"><div class="hero-copy"><span class="overline"><span class="spark">&#10022;</span> SEU ASSISTENTE DE CORTES</span><h1>A live acontece.<br><span>Os melhores momentos ficam.</span></h1><p>Grave streams, importe links de VOD ou envie v&iacute;deos de qualquer dura&ccedil;&atilde;o e publique Shorts aprovados direto no YouTube.</p><div class="hero-points"><span>&#10003; Twitch, YouTube e Kick</span><span>&#10003; Cortes inteligentes 9:16</span><span>&#10003; Publica&ccedil;&atilde;o OAuth aprovada</span></div></div><div class="hero-orbit"><div class="orbit orbit1"></div><div class="orbit orbit2"></div><div class="orb-center">&#9654;<span>AI</span></div><div class="orb-chip chip1">00:42 <b>Momento</b></div><div class="orb-chip chip2">&#10022; 92</div></div></div>
+        <div class="section-heading"><div><span class="overline">COMECE AQUI</span><h2>Escolha sua entrada</h2></div><span class="muted small">Upload, VOD ou Live em tempo real</span></div>
+        <div class="source-grid three-cols">
+          <article class="panel upload-panel"><div class="panel-head"><div class="panel-icon">&#8679;</div><div><h3>Enviar v&iacute;deo</h3><p>Do celular ou computador</p></div></div><div class="dropzone" id="dropzone"><div class="drop-illustration">&#8679;</div><b>Arraste o v&iacute;deo ou toque para escolher</b><p>MP4, MKV, MOV, WEBM e TS</p><input id="video-file" type="file" accept="video/*,.mkv,.ts,.webm"><span class="outlined">Selecionar arquivo</span></div><div id="file-label" class="file-label hidden"></div><label class="checkline"><input type="checkbox" id="upload-authorized"> Tenho direito de editar este v&iacute;deo</label><button id="btn-upload" class="primary full" disabled>Enviar para o est&uacute;dio <span>&rarr;</span></button><div class="progress-wrap hidden" id="upload-progress"><div class="progress-rail"><div id="upload-bar"></div></div><span id="upload-text">0%</span></div><p class="hint">Envio em blocos recuper&aacute;veis de 8 MB.</p></article>
+
+          <article class="panel vod-panel"><div class="panel-head"><div class="panel-icon">&#128279;</div><div><h3>Importar link de VOD</h3><p>Baixe um v&iacute;deo j&aacute; publicado</p></div></div><label class="field-label" for="vod-url">LINK DO V&Iacute;DEO (YOUTUBE / TWITCH / KICK)</label><input id="vod-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><div class="platform-desc"><span class="supported">YT-DLP</span><span class="supported">MP4 1080P</span></div><label class="checkline"><input type="checkbox" id="vod-auto" checked> Sugerir cortes automaticamente ao baixar</label><label class="checkline"><input type="checkbox" id="vod-authorized"> Tenho direito de editar este v&iacute;deo</label><button id="btn-vod" class="primary full">Baixar e importar VOD <span>&rarr;</span></button><p class="hint" id="vod-capability">Converte automaticamente para MP4 compat&iacute;vel com o editor.</p></article>
+
+          <article class="panel live-panel"><div class="panel-head"><div class="panel-icon live-icon">&#9679;</div><div><h3>Acompanhar uma live</h3><p>Grave uma transmiss&atilde;o ao vivo</p></div></div><label class="field-label" for="live-url">LINK DA TRANSMISS&Atilde;O</label><input id="live-url" type="url" placeholder="https://www.twitch.tv/canal"><div class="platform-desc"><span class="supported">TWITCH</span><span class="supported">YOUTUBE</span><span class="supported">KICK</span></div><div class="live-explainer"><span class="live-signal">&#9679;</span><div><b>Grava&ccedil;&atilde;o integral</b><p>O est&uacute;dio grava o conte&uacute;do e remuxa para MP4 ao terminar.</p></div></div><label class="checkline"><input type="checkbox" id="live-auto" checked> Sugerir cortes automaticamente ao terminar</label><label class="checkline"><input type="checkbox" id="live-authorized"> Tenho autoriza&ccedil;&atilde;o para gravar essa live</label><button id="btn-live" class="primary full">Iniciar acompanhamento <span>&rarr;</span></button><p class="hint" id="live-capability">Verificando suporte no servidor...</p><div id="lives-list"></div></article>
+        </div>
+      </section>
+
+      <section id="library" class="page"><div class="section-heading"><div><span class="overline">PROJETOS</span><h1>Minha biblioteca</h1><p>Abra um v&iacute;deo para editar ou gerar sugestões de clipes.</p></div><div class="btn-row"><button class="outline" id="cleanup-storage" type="button">Limpar tempor&aacute;rios</button><button class="outline" id="refresh-library" type="button">Atualizar</button></div></div><div id="video-library" class="video-grid"></div></section>
+
+      <section id="editor" class="page"><div class="section-heading"><div><span class="overline">EDITOR INTELIGENTE</span><h1>Oficina de clipes</h1><p id="editor-subtitle">Selecione um v&iacute;deo da biblioteca para come&ccedil;ar.</p></div><button class="outline" id="back-library">Minha biblioteca</button><button class="primary" id="btn-advanced-timeline" disabled>◎ Abrir timeline profissional</button></div><div id="editor-empty" class="empty-state"><div>&#9986;</div><h3>Nenhum v&iacute;deo selecionado</h3><p>Envie um arquivo, importe um VOD ou grave uma live para abrir o editor.</p><button class="primary" id="empty-go">Novo projeto</button></div><div id="editor-body" class="hidden"><div class="editor-layout"><section class="editor-main"><div class="video-frame"><video id="editor-player" controls playsinline preload="metadata"></video></div><div class="panel editor-controls"><div class="pane-top"><h3>Crie seu corte</h3><span class="fine">SELE&Ccedil;&Atilde;O MANUAL</span></div><div class="timeline"><div class="timeline-rail"><div id="timeline-selection"></div></div><div class="timeline-labels"><span id="range-start-time">00:00</span><span id="range-end-time">00:00</span></div></div><div class="trim-grid"><label>IN&Iacute;CIO (s) <input id="clip-start" type="number" min="0" step="0.1" value="0"></label><label>FIM (s) <input id="clip-end" type="number" min="0" step="0.1" value="30"></label></div><div class="range-controls"><input id="start-slider" type="range" min="0" max="30" step="0.1" value="0"><input id="end-slider" type="range" min="0" max="30" step="0.1" value="30"></div><div class="input-and-button"><input id="manual-title" maxlength="140" placeholder="Ex.: A jogada mais absurda da live"><button class="primary" id="btn-manual">+ Criar clipe</button></div></div></section><aside class="editor-side"><div class="panel"><div class="pane-top"><h3>&#10022; Encontrar momentos</h3><span class="ai-label">IA</span></div><p class="muted small">Analise a grava&ccedil;&atilde;o e veja sugest&otilde;es de trechos interessantes.</p><div class="trim-grid"><label>QUANTIDADE<select id="clip-count"><option value="3">3 clipes</option><option value="5" selected>5 clipes</option><option value="10">10 clipes</option></select></label><label>DURA&Ccedil;&Atilde;O<select id="clip-length"><option value="30">30 segundos</option><option value="40" selected>40 segundos</option><option value="60">60 segundos</option></select></label></div><label class="checkline"><input id="transcribe" type="checkbox"> Transcrever falas localmente (se instalado)</label>
+<label class="checkline"><input id="cloud-model" type="checkbox"> Usar modelo escolhido em Conexões para avaliar os momentos</label>
+<label class="checkline" id="cloud-approval-line"><input id="cloud-approved" type="checkbox"> Autorizo enviar pequenos trechos da transcrição ao provedor de IA; pode consumir créditos</label><details class="advanced"><summary>IA sem&acirc;ntica local (opcional)</summary><label>MODELO OLLAMA<input id="ollama-model" placeholder="Ex.: qwen2.5:3b"></label><p class="hint">Precisa do Ollama e do modelo j&aacute; instalados. Sem isso, deixe vazio.</p></details><button class="primary full" id="btn-analyze">&#10022; Buscar melhores momentos</button><p class="hint" id="analysis-note">Sem transcri&ccedil;&atilde;o, a sele&ccedil;&atilde;o usa apenas picos de &aacute;udio (baixa confian&ccedil;a).</p></div><div class="panel"><div class="pane-top"><h3>Exporta&ccedil;&atilde;o</h3><span class="fine">9:16</span></div><label>ENQUADRAMENTO<select id="layout"><option value="blur">V&iacute;deo completo + fundo desfocado</option><option value="fit">V&iacute;deo completo com bordas</option><option value="crop">Recorte central</option></select></label><label class="checkline"><input id="burn-subs" type="checkbox"> Embutir legendas quando dispon&iacute;veis</label><p class="hint">Pr&eacute;via em 720&times;1280 e final em 1080&times;1920. Exporta&ccedil;&atilde;o final exige aprova&ccedil;&atilde;o da pr&eacute;via.</p></div></aside></div><div class="section-heading moments-title"><div><span class="overline">SUA SELE&Ccedil;&Atilde;O</span><h2>Momentos encontrados <span id="clips-number">0</span></h2></div><button class="outline" id="refresh-clips">Atualizar</button></div><div id="clips-list" class="clips-list"><div class="empty-state mini"><p>Crie um clipe manual ou use a an&aacute;lise para ver sugest&otilde;es.</p></div></div></div></section>
+
+      <section id="connections" class="page" aria-label="Conexões e modelos">
+        <div class="section-heading"><div><span class="overline">SUAS INTEGRAÇÕES</span><h1>Conexões e modelos</h1><p>Entre nas contas oficiais e escolha sua inteligência artificial sem copiar Client ID ou Secret.</p></div></div>
+        <div class="section-heading connection-heading"><div><span class="overline">PUBLICAÇÃO E CAPTURA</span><h2>Suas contas</h2></div><button id="reload-social" class="outline" type="button">Atualizar</button></div>
+        <div id="social-grid" class="source-grid social-grid"><article class="panel"><p>Consultando as plataformas...</p></article></div>
+        <div class="connection-help">Para entrar nas contas, o administrador registra <b>o aplicativo AutoClips</b> uma vez nas variáveis de ambiente. Depois, todos os acessos são realizados pelo login oficial, sem digitar senha ou secret nesta tela. <b>Nenhum clipe será publicado sem sua aprovação explícita.</b></div>
+        <div class="section-heading connection-heading"><div><span class="overline">MULTI-MODELOS</span><h2>Seus provedores de IA</h2></div></div>
+        <div class="source-grid ai-providers-grid">
+          <article class="panel provider-panel">
+            <div class="panel-head"><div class="panel-icon">✦</div><div><h3>OpenRouter</h3><p>Adicione sua chave para carregar automaticamente o catálogo de modelos.</p></div></div>
+            <form id="openrouter-form">
+              <label class="field-label" for="openrouter-key">CHAVE DE API</label>
+              <input id="openrouter-key" type="password" autocomplete="off" minlength="5" required placeholder="sk-or-v1-••••••••">
+              <button class="primary full" type="submit" style="margin-top:12px">Verificar chave e buscar modelos →</button>
+            </form>
+            <p class="hint">A chave é enviada apenas ao seu backend, validada no OpenRouter e armazenada criptografada.</p>
+          </article>
+          <article class="panel provider-panel">
+            <div class="panel-head"><div class="panel-icon">◎</div><div><h3>Provedor personalizado</h3><p>Para serviços compatíveis com a API OpenAI.</p></div></div>
+            <form id="custom-provider-form">
+              <label class="field-label" for="custom-name">NOME</label><input id="custom-name" required minlength="2" maxlength="80" placeholder="Meu provedor">
+              <label class="field-label spaced" for="custom-endpoint">URL-BASE HTTPS</label><input id="custom-endpoint" type="url" required placeholder="https://api.exemplo.com/v1">
+              <label class="field-label spaced" for="custom-key">CHAVE DE API</label><input id="custom-key" type="password" autocomplete="off" required minlength="5" placeholder="••••••••">
+              <button class="primary full" type="submit" style="margin-top:12px">Conectar e buscar modelos →</button>
+            </form>
+            <p class="hint">Consulta <code>GET /models</code> e usa <code>POST /chat/completions</code>.</p>
+          </article>
+        </div>
+        <div id="provider-list" class="provider-list" aria-live="polite"></div>
+        <article class="panel model-picker">
+          <div class="pane-top"><div><h3>Escolha o modelo por tarefa</h3><p class="hint">Pesquise no catálogo do provedor e escolha um modelo para cada etapa.</p></div><span class="ai-label">MODELOS</span></div>
+          <div class="model-form-grid">
+            <label>PARA QUAL ETAPA?<select id="model-stage"><option value="moments">Encontrar melhores momentos</option><option value="titles">Títulos e descrições</option><option value="review">Revisão de conteúdo</option></select></label>
+            <label>PROVEDOR<select id="model-provider"><option value="">Primeiro conecte um provedor</option></select></label>
+          </div>
+          <label class="field-label spaced" for="model-search">PESQUISAR MODELOS</label><input id="model-search" placeholder="Ex.: Gemini, Qwen, Claude, gratuito...">
+          <label class="field-label spaced" for="model-choice">MODELO DISPONÍVEL</label><select id="model-choice"><option>Escolha um provedor para ver os modelos</option></select>
+          <p id="model-feedback" class="hint" aria-live="polite"></p>
+          <button id="save-model" class="primary full">Usar este modelo na etapa selecionada</button>
+          <div id="selected-models" class="selected-models"></div>
+        </article>
+      </section>
+    </main>
+  </div>
+</div>
+<div class="mobile-tabs"><button data-tab="sources" class="active">&#8679;<span>In&iacute;cio</span></button><button data-tab="library">&#9633;<span>Biblioteca</span></button><button data-tab="editor">&#9986;<span>Editor</span></button><button data-tab="connections">◎<span>Conexões</span></button></div>
+<script src="/static/app.js"></script>
+<script src="/static/connections.js"></script>
+</body>
+</html>

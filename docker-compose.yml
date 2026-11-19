@@ -1,0 +1,16 @@
+services:
+  autoclips:
+    build: .
+    container_name: autoclips-studio
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - AUTOCLIPS_DATA_ROOT=/data/autoclips
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - autoclips_data:/data
+
+volumes:
+  autoclips_data:
