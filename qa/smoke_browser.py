@@ -97,6 +97,11 @@ def main():
             page.locator('#clip-end').fill('2.0')
             page.locator('#btn-manual').click()
             page.locator('.clip-card').wait_for(timeout=10000)
+            # Mobile clip title must use available width and dark theme.
+            ratio=page.locator('.clip-card .c-title').evaluate('(el) => el.getBoundingClientRect().width / el.parentElement.getBoundingClientRect().width')
+            assert ratio >= 0.95, f'Mobile title field uses only {ratio:.1%} of its width'
+            bg=page.locator('.clip-card .c-title').evaluate('(el) => getComputedStyle(el).backgroundColor')
+            assert bg == 'rgb(13, 13, 22)', f'Mobile title has wrong background: {bg}'
             assert 'Clipe criado no navegador' in page.locator('.clip-card .c-title').input_value()
             page.locator('.clip-card .c-gen-meta').wait_for(timeout=10000)
             assert 'Sugerir título (sem IA)' in page.locator('.clip-card .c-gen-meta').inner_text()

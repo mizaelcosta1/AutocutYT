@@ -593,3 +593,18 @@ button.full { width: 100%; }
 .comfy-workflows .panel {min-width:0}
 .comfy-launch {display:block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 12px;border-radius:10px}
 .comfy-workflows h3 {overflow-wrap:anywhere}
+
+/* QA mobile checkpoint: full-width, readable clip metadata fields. */
+.clip-fields input { width: 100%; min-width: 0; box-sizing: border-box; }
+.clip-fields > label { min-width: 0; }
+@media (max-width: 760px) {
+  .clip-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .clip-fields > label:first-child { grid-column: 1 / -1; }
+  .clip-card .btn-row > .c-render-final,
+  .clip-card .btn-row > button.primary:not(.c-gen-meta),
+  .clip-card .btn-row > .checkline { flex: 1 1 100%; }
+  .clip-card .btn-row > button.primary { min-height: 44px; }
+  .yt-publish-box textarea { min-width: 0; }
+}
+/* Default text inputs omit type="text" in templates. */
+input:not([type]) { width: 100%; min-width: 0; box-sizing: border-box; background: #0d0d16; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 0.9rem; }
