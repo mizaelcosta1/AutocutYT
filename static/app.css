@@ -608,3 +608,55 @@ button.full { width: 100%; }
 }
 /* Default text inputs omit type="text" in templates. */
 input:not([type]) { width: 100%; min-width: 0; box-sizing: border-box; background: #0d0d16; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 0.9rem; }
+
+/* v0.7.3: complete model catalog, free routing and provider setup. */
+#connections .connection-heading { margin-top: 30px; }
+#connections .panel, #connections .panel-head > div, #connections .model-form-grid > label { min-width: 0; }
+#connections .panel p { line-height: 1.55; }
+#connections input, #connections select { max-width: 100%; min-width: 0; }
+#connections input[type="search"] { width: 100%; background: #0d0d16; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 0.9rem; }
+#connections input[readonly] { color: #c4c8db; background: #171725; }
+#connections :is(button, a, input, select):focus-visible { outline: 2px solid #7dd3fc; outline-offset: 3px; }
+#connections .model-form-grid > label { display: flex; flex-direction: column; gap: 7px; font-size: 0.73rem; font-weight: 700; color: var(--muted); }
+#connections .model-form-grid select, #connections .model-form-grid input { font-weight: 400; }
+#connections .connection-link { display: inline-block; color: #93c5fd; font-size: 0.85rem; line-height: 1.6; text-underline-offset: 3px; overflow-wrap: anywhere; }
+#connections .free-badge { display: inline-flex; align-items: center; padding: 5px 9px; border: 1px solid #286b50; border-radius: 8px; color: #a7f3d0; background: #113125; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
+.free-model-info { padding: 16px 18px; background: linear-gradient(115deg, #14283a, #19192c); border: 1px solid #2d4864; border-radius: 12px; margin-bottom: 16px; }
+.free-model-info b { color: #dbeafe; font-size: 0.95rem; }
+.free-model-info p { margin: 6px 0 0; color: #b6c7dc; font-size: 0.85rem; line-height: 1.6; }
+.connection-feedback { padding: 11px 14px; background: #101e2a; border: 1px solid #2e445d; border-radius: 10px; font-size: 0.85rem; line-height: 1.55; overflow-wrap: anywhere; }
+.preset-details { margin: 10px 0 12px; border-left: 2px solid #5962a9; padding: 0 0 0 12px; }
+.preset-details .hint { margin: 5px 0; }
+.connected-provider .pane-top { align-items: flex-start; }
+.connected-provider .pane-top .hint { margin: 5px 0 0; }
+.provider-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; color: var(--muted); font-size: 0.82rem; }
+.free-active { color: #86efac; }
+.provider-actions { gap: 8px; }
+.provider-actions button { font-size: 0.82rem; }
+.provider-feedback { margin-bottom: 0; overflow-wrap: anywhere; }
+.connection-empty { border: 1px dashed var(--border); border-radius: 12px; padding: 17px; color: #b9bfd3; font-size: 0.86rem; }
+.connection-empty p { margin: 6px 0 0; }
+#model-choice { width: 100%; text-overflow: ellipsis; }
+#model-count { margin: 14px 0 8px; }
+#model-price-note { border-left: 2px solid #566180; padding-left: 10px; }
+#selected-models .sel-chip { border-radius: 10px; max-width: 100%; overflow-wrap: anywhere; line-height: 1.6; }
+@media (max-width: 1080px) and (min-width: 761px) {
+  .ai-providers-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .topbar { padding: 0 16px; gap: 8px; }
+  .topbar .platforms { gap: 4px; }
+  .topbar .pill { padding: 4px 6px; font-size: 0.66rem; }
+  .mobile-brand { font-size: 0.86rem; white-space: nowrap; }
+  #connections > .section-heading { flex-wrap: wrap; align-items: flex-start; }
+  #connections > .section-heading > button { width: 100%; }
+  #connections .ai-providers-grid { grid-template-columns: minmax(0, 1fr); }
+  .connected-provider .pane-top { flex-wrap: wrap; }
+  .provider-actions > button { flex: 1 1 100%; min-height: 44px; }
+  #connections .model-picker .pane-top { align-items: flex-start; }
+  #connections .model-picker .pane-top .ai-label { display: none; }
+  #load-more-models { width: 100%; min-height: 44px; }
+  #connections input, #connections select { font-size: 16px; }
+  #connections input[type="search"] { font-size: 16px; }
+  .free-model-info { padding: 14px; }
+}

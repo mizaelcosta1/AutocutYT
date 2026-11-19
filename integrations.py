@@ -24,6 +24,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 import httpx
 from pydantic import BaseModel, Field
 
+from ai_catalog import (OPENROUTER_FREE_ROUTER, PROVIDER_PRESETS, normalize_models,
+                        public_catalog)
+from ai_runtime import ModelRequestError, chat_completion
+
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 SOCIAL = {
     "youtube": {
@@ -64,6 +68,7 @@ class NewProvider(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     api_key: str = Field(min_length=5, max_length=4096)
     endpoint: str | None = Field(default=None, max_length=1024)
+    preset_id: str | None = Field(default=None, max_length=40)
 
 
 class ModelSelection(BaseModel):
@@ -153,10 +158,13 @@ def validate_endpoint(base: str) -> str:
     return urlunsplit(("https", url.netloc.lower(), path, "", ""))
 
 
-def remote_get(url: str, key: str) -> dict:
+def remote_get(url: str, key: str = "") -> dict:
     with httpx.Client(timeout=18, follow_redirects=False, trust_env=False) as client:
         try:
-            response = client.get(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            headers = {"Accept": "application/json"}
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            response = client.get(url, headers=headers)
             if response.status_code in {301, 302, 303, 307, 308}:
                 raise ValueError("O provedor redirecionou a API; confira a URL-base")
             response.raise_for_status()
@@ -173,42 +181,112 @@ def remote_get(url: str, key: str) -> dict:
 
 
 def model_items(response: dict) -> list[dict]:
-    raw = response.get("data", response.get("models", []))
-    if isinstance(raw, dict):
-        raw = raw.get("models", [])
-    if not isinstance(raw, list):
-        raise ValueError("O endpoint /models nao devolveu uma lista compativel")
-    mapped = {}
-    for value in raw[:10000]:
-        if isinstance(value, str):
-            value = {"id": value}
-        if not isinstance(value, dict):
-            continue
-        model_id = str(value.get("id") or value.get("name") or "")
-        if not model_id or len(model_id) > 256:
-            continue
-        if model_id.startswith("models/"):
-            model_id = model_id[7:]
-        mapped[model_id] = {
-            "id": model_id, "name": str(value.get("name") or model_id)[:160],
-            "context_length": value.get("context_length"),
-            "pricing": value.get("pricing") if isinstance(value.get("pricing"), dict) else None,
-            "description": str(value.get("description") or "")[:300],
-        }
-    if not mapped:
-        raise ValueError("Nenhum modelo valido retornado pelo endpoint /models")
-    return sorted(mapped.values(), key=lambda x: x["name"].casefold())
+    return normalize_models(response)
+
+
+def _quota_info(payload: dict) -> dict | None:
+    data = payload.get("data", {})
+    raw = data.get("free_model_daily_requests") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    result = {k: raw[k] for k in ("used", "limit", "remaining")
+              if type(raw.get(k)) in (int, float) and raw[k] >= 0}
+    return (result | {"checked_at": utc()}) if result else None
+
+
+class ModelCatalog(list):
+    def __init__(self, models: list[dict], quota: dict | None = None):
+        super().__init__(models)
+        self.quota = quota
 
 
 def discover_models(kind: str, endpoint: str, key: str) -> list[dict]:
+    quota = None
     if kind == "openrouter":
-        remote_get(OPENROUTER_BASE + "/key", key)
-    return model_items(remote_get(endpoint + "/models", key))
+        quota = _quota_info(remote_get(OPENROUTER_BASE + "/key", key))
+    # The public catalogue is complete and independent from key balance. Key
+    # validation is separate; zero balance does not hide free model entries.
+    payload = remote_get(endpoint + "/models", "" if kind == "openrouter" else key)
+    return ModelCatalog(normalize_models(payload, kind), quota)
+
+
+def _models(entry: dict) -> list[dict]:
+    if not entry.get("models"):
+        return []
+    return normalize_models({"data": entry["models"]}, entry.get("kind", "custom"))
+
+
+def _canonical_endpoint(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    if (parsed.scheme == "https" and parsed.hostname == "openrouter.ai"
+            and parsed.port in (None, 443) and parsed.path.rstrip("/") == "/api/v1"
+            and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment):
+        return OPENROUTER_BASE
+    return endpoint
+
+
+def _free_router(entry: dict) -> bool:
+    return entry.get("kind") == "openrouter" and entry.get("endpoint") == OPENROUTER_BASE and any(
+        m["id"] == OPENROUTER_FREE_ROUTER and m["price_class"] == "free"
+        and m["chat_compatible"] for m in _models(entry))
+
+
+def _apply_free_defaults(state: dict, entry: dict, *, preserve_other_providers: bool = False) -> list[str]:
+    selected = state.setdefault("selected", {})
+    applied = []
+    for stage in ("moments", "titles"):
+        previous = selected.get(stage)
+        if preserve_other_providers and previous and previous.get("provider_id") != entry["id"]:
+            continue
+        if previous and previous.get("model_id") != OPENROUTER_FREE_ROUTER:
+            state.setdefault("selection_before_free_defaults", {}).setdefault(stage, previous)
+        selected[stage] = {"provider_id": entry["id"], "model_id": OPENROUTER_FREE_ROUTER, "free_only": True}
+        applied.append(stage)
+    entry["free_defaults_applied"] = applied
+    return applied
+
+
+def migrate_free_defaults(vault: Vault) -> dict:
+    """One-time upgrade of existing OpenRouter connections; never fetch keys.
+
+    Only the documented free router present in the saved catalogue is enabled.
+    Other providers' selected tasks and the old selections remain recoverable.
+    """
+    with vault.lock:
+        state = vault.read()
+        if state.get("free_models_upgrade") == 1:
+            return {"migrated": False}
+        applied = []
+        for entry in state.get("providers", {}).values():
+            entry["endpoint"] = _canonical_endpoint(entry["endpoint"])
+            if entry["endpoint"] == OPENROUTER_BASE:
+                entry["kind"] = "openrouter"
+            entry["models"] = _models(entry)
+        # Preserve the free-cost intention on legacy selections even when the
+        # saved catalogue predates openrouter/free. A later price increase must
+        # invalidate the choice, never silently drop the zero-price guard.
+        for selection in state.get("selected", {}).values():
+            provider = state.get("providers", {}).get(selection.get("provider_id"))
+            if provider and provider["kind"] == "openrouter":
+                selected_model = next((m for m in provider["models"] if m["id"] == selection.get("model_id")), None)
+                if selected_model and selected_model["price_class"] == "free":
+                    selection["free_only"] = True
+        for entry in state.get("providers", {}).values():
+            if _free_router(entry):
+                applied.extend(_apply_free_defaults(state, entry, preserve_other_providers=True))
+        state["free_models_upgrade"] = 1
+        vault.save(state)
+        return {"migrated": True, "tasks_configured": sorted(set(applied))}
 
 
 def public_provider(entry: dict) -> dict:
-    return {k: entry.get(k) for k in ("id", "kind", "name", "endpoint", "created_at", "updated_at")} | {
-        "model_count": len(entry.get("models", [])),
+    models = _models(entry)
+    return {k: entry.get(k) for k in ("id", "kind", "name", "endpoint", "preset_id", "created_at", "updated_at")} | {
+        "model_count": len(models),
+        "free_model_count": sum(m["price_class"] == "free" and m["chat_compatible"] for m in models),
+        "free_router_available": _free_router(entry),
+        "free_defaults_applied": entry.get("free_defaults_applied", []),
+        "quota": entry.get("quota"),
         "key_saved": bool(entry.get("api_key")), "last_four": entry.get("api_key", "")[-4:],
     }
 
@@ -219,10 +297,16 @@ def get_selected(vault: Vault, stage: str = "moments") -> dict | None:
     if not sel:
         return None
     provider = data.get("providers", {}).get(sel["provider_id"])
-    if not provider or sel["model_id"] not in {m["id"] for m in provider["models"]}:
+    model = next((m for m in _models(provider) if m["id"] == sel["model_id"]), None) if provider else None
+    if not provider or not model or not model["chat_compatible"]:
+        return None
+    if sel.get("free_only") and model["price_class"] != "free":
+        return None
+    if provider["kind"] == "openrouter" and model["id"] == OPENROUTER_FREE_ROUTER and model["price_class"] != "free":
         return None
     return {"provider_id": sel["provider_id"], "model_id": sel["model_id"],
-            "endpoint": provider["endpoint"], "api_key": provider["api_key"]}
+            "endpoint": provider["endpoint"], "api_key": provider["api_key"],
+            "kind": provider["kind"], "free_only": provider["kind"] == "openrouter" and model["price_class"] == "free"}
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -242,22 +326,15 @@ def rerank_remote(proposals: list[dict], selected: dict) -> list[dict]:
         prompt = ("Avalie de 0 a 10 o potencial deste trecho para video curto, "
                   "preservando o significado original. Responda SOMENTE JSON "
                   '{"score":7,"reason":"justificativa curta"}.\n\n' + excerpt[:700])
-        with httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as client:
-            resp = client.post(selected["endpoint"] + "/chat/completions",
-                               headers={"Authorization": "Bearer " + selected["api_key"], "Content-Type": "application/json"},
-                               json={"model": selected["model_id"], "temperature": 0,
-                                     "messages": [{"role": "system", "content": "Voce e um editor de video cuidadoso."},
-                                                  {"role": "user", "content": prompt}]})
-            resp.raise_for_status()
-            result = resp.json()
-        answer = result["choices"][0]["message"]["content"]
-        if not isinstance(answer, str):
-            raise ValueError("O modelo nao devolveu texto")
-        parsed = _parse_llm_json(answer)
+        result = chat_completion(selected, [
+            {"role": "system", "content": "Você é um editor de vídeo cuidadoso."},
+            {"role": "user", "content": prompt}], max_tokens=256, timeout=60)
+        parsed = _parse_llm_json(result["content"])
         score = max(0, min(10, float(parsed["score"])))
         c["score"] = round(c["score"] + score * 5, 2)
         c["reason"] = (c.get("reason", "") + "; IA: " + str(parsed.get("reason", ""))[:160])[:400]
         c["method"] = "remote-llm+heuristic"
+        c["ai_model"] = result["model"]
     return proposals
 
 
@@ -271,27 +348,18 @@ def generate_clip_metadata(vault: Vault, excerpt: str, fallback_title: str = "")
             'Responda SOMENTE JSON: {"title":"...","description":"...","tags":["shorts","clips"]}.\n\n'
             f"Trecho: {clean_excerpt[:900]}"
         )
-        with httpx.Client(timeout=45, follow_redirects=False, trust_env=False) as client:
-            resp = client.post(
-                selected["endpoint"] + "/chat/completions",
-                headers={"Authorization": "Bearer " + selected["api_key"], "Content-Type": "application/json"},
-                json={
-                    "model": selected["model_id"],
-                    "temperature": 0.4,
-                    "messages": [
-                        {"role": "system", "content": "Voce e especialista em retencao e titulos para YouTube Shorts."},
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        parsed = _parse_llm_json(data["choices"][0]["message"]["content"])
+        result = chat_completion(selected, [
+            {"role": "system", "content": "Você é especialista em retenção e títulos para YouTube Shorts."},
+            {"role": "user", "content": prompt}], temperature=0.4, max_tokens=384)
+        parsed = _parse_llm_json(result["content"])
         title = str(parsed.get("title") or fallback_title or "Momento destaque")[:95].strip()
         desc = str(parsed.get("description") or clean_excerpt[:200])[:450].strip()
         raw_tags = parsed.get("tags") or ["shorts", "cortes"]
+        if not isinstance(raw_tags, list):
+            raw_tags = ["shorts", "cortes"]
         tags = [re.sub(r"[^A-Za-z0-9À-ÿ_]", "", str(t).lstrip("#")) for t in raw_tags if str(t).strip()][:8]
-        return {"title": title, "description": desc, "tags": tags, "source": "ai:" + selected["model_id"]}
+        return {"title": title, "description": desc, "tags": tags, "source": "ai:" + result["model"],
+                "requested_model": selected["model_id"]}
 
     words = [w for w in clean_excerpt.split() if len(w) > 2]
     snippet = " ".join(words[:11]).rstrip(".,;:")
@@ -550,6 +618,10 @@ def _identity(provider: str, token: str, client_id: str) -> dict:
 def build_router(vault: Vault) -> APIRouter:
     router = APIRouter()
 
+    @router.get("/api/ai/catalog")
+    def ai_catalog():
+        return public_catalog()
+
     @router.get("/api/ai/providers")
     def ai_providers():
         data = vault.read()
@@ -560,44 +632,112 @@ def build_router(vault: Vault) -> APIRouter:
     def add_provider(form: NewProvider):
         kind = form.kind
         try:
-            endpoint = OPENROUTER_BASE if kind == "openrouter" else validate_endpoint(form.endpoint or "")
+            preset = PROVIDER_PRESETS.get(form.preset_id) if form.preset_id else None
+            if form.preset_id and not preset:
+                raise ValueError("Provedor não encontrado no catálogo.")
+            if preset:
+                kind = preset["kind"]
+                endpoint = preset["endpoint"]
+            else:
+                endpoint = OPENROUTER_BASE if kind == "openrouter" else validate_endpoint(form.endpoint or "")
+            endpoint = _canonical_endpoint(endpoint)
+            # A custom form pointing at the official URL must still get the
+            # authenticated OpenRouter discovery and zero-price safeguards.
+            if endpoint == OPENROUTER_BASE:
+                kind = "openrouter"
             models = discover_models(kind, endpoint, form.api_key)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         with vault.lock:
             state = vault.read()
-            item = {"id": uuid4().hex, "kind": kind, "name": form.name.strip(), "endpoint": endpoint,
-                    "api_key": form.api_key, "models": models, "created_at": utc(), "updated_at": utc()}
+            # Reconnecting an existing credential updates the catalogue instead
+            # of creating duplicates and silently abandoning task selections.
+            existing = next((p for p in state["providers"].values()
+                             if p["endpoint"] == endpoint and secrets.compare_digest(p["api_key"], form.api_key)), None)
+            item = {"id": existing["id"] if existing else uuid4().hex, "kind": kind,
+                    "name": preset["name"] if preset else form.name.strip(), "endpoint": endpoint,
+                    "preset_id": form.preset_id, "api_key": form.api_key, "models": list(models),
+                    "quota": getattr(models, "quota", None),
+                    "created_at": existing["created_at"] if existing else utc(), "updated_at": utc()}
             state["providers"][item["id"]] = item
             vault.save(state)
         return {"provider": public_provider(item), "models": models}
 
     @router.get("/api/ai/providers/{provider_id}/models")
-    def get_models(provider_id: str, q: str = Query("", max_length=100), offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+    def get_models(provider_id: str, q: str = Query("", max_length=100),
+                   cost: Literal["free", "paid", "unknown", "all"] = "all",
+                   offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
         item = vault.read()["providers"].get(provider_id)
         if not item:
             raise HTTPException(404, "Provedor nao cadastrado")
-        models = [m for m in item["models"] if q.casefold() in (m["id"] + " " + m["name"]).casefold()]
-        return {"total": len(models), "models": models[offset:offset + limit]}
+        models = [m for m in _models(item) if m["chat_compatible"]
+                  and q.casefold() in (m["id"] + " " + m["name"]).casefold()]
+        counts = {key: sum(m["price_class"] == key for m in models) for key in ("free", "paid", "unknown")}
+        counts["all"] = len(models)
+        # Price and search filters precede pagination, so free models cannot
+        # disappear behind the first 250 alphabetically sorted paid entries.
+        filtered = models if cost == "all" else [m for m in models if m["price_class"] == cost]
+        return {"total": len(filtered), "models": filtered[offset:offset + limit],
+                "offset": offset, "limit": limit, "has_more": offset + limit < len(filtered), "counts": counts}
 
     @router.post("/api/ai/providers/{provider_id}/refresh")
     def refresh_models(provider_id: str):
+        # Do not hold the vault lock during network I/O (OAuth and edits share it).
+        original = vault.read()["providers"].get(provider_id)
+        if not original:
+            raise HTTPException(404, "Provedor não cadastrado")
+        try:
+            items = discover_models(original["kind"], original["endpoint"], original["api_key"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         with vault.lock:
             state = vault.read()
             item = state["providers"].get(provider_id)
             if not item:
                 raise HTTPException(404, "Provedor nao cadastrado")
-            try:
-                items = discover_models(item["kind"], item["endpoint"], item["api_key"])
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-            item["models"] = items
+            if item["api_key"] != original["api_key"]:
+                raise HTTPException(409, "A conexão mudou. Atualize novamente.")
+            item["models"] = list(items)
+            item["quota"] = getattr(items, "quota", None)
             item["updated_at"] = utc()
             for stage, sel in list(state.get("selected", {}).items()):
-                if sel["provider_id"] == provider_id and sel["model_id"] not in {m["id"] for m in items}:
-                    state["selected"].pop(stage)
+                if sel["provider_id"] == provider_id:
+                    current = next((m for m in _models(item) if m["id"] == sel["model_id"]), None)
+                    if not current or not current["chat_compatible"] or (sel.get("free_only") and current["price_class"] != "free"):
+                        state["selected"].pop(stage)
             vault.save(state)
         return {"count": len(items), "provider": public_provider(item)}
+
+    @router.post("/api/ai/providers/{provider_id}/free-defaults")
+    def free_defaults(provider_id: str):
+        with vault.lock:
+            state = vault.read()
+            item = state["providers"].get(provider_id)
+            if not item:
+                raise HTTPException(404, "Provedor não cadastrado")
+            if not _free_router(item):
+                raise HTTPException(422, "Atualize o catálogo do OpenRouter para habilitar o roteador gratuito.")
+            _apply_free_defaults(state, item)
+            vault.save(state)
+        return {"selected": state["selected"], "message": "Automático gratuito configurado para momentos e títulos.",
+                "model_id": OPENROUTER_FREE_ROUTER}
+
+    @router.post("/api/ai/providers/{provider_id}/test")
+    def test_free_model(provider_id: str):
+        item = vault.read()["providers"].get(provider_id)
+        if not item:
+            raise HTTPException(404, "Provedor não cadastrado")
+        if not _free_router(item):
+            raise HTTPException(422, "O teste gratuito requer openrouter/free no catálogo da sua conexão OpenRouter.")
+        selected = {"kind": "openrouter", "endpoint": OPENROUTER_BASE, "api_key": item["api_key"],
+                    "model_id": OPENROUTER_FREE_ROUTER, "free_only": True}
+        try:
+            result = chat_completion(selected, [{"role": "user", "content": "Responda apenas OK."}], max_tokens=64)
+        except ModelRequestError as exc:
+            headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+            raise HTTPException(exc.status_code, str(exc), headers=headers) from None
+        return {"ok": True, "model_id": result["model"], "provider_name": item["name"],
+                "message": "A IA gratuita respondeu. O teste consumiu uma chamada da cota, sem enviar conteúdo dos seus vídeos."}
 
     @router.delete("/api/ai/providers/{provider_id}")
     def delete_provider(provider_id: str):
@@ -618,9 +758,15 @@ def build_router(vault: Vault) -> APIRouter:
             item = state["providers"].get(form.provider_id)
             if not item:
                 raise HTTPException(404, "Provedor nao encontrado")
-            if form.model_id not in {m["id"] for m in item["models"]}:
+            model = next((m for m in _models(item) if m["id"] == form.model_id), None)
+            if not model:
                 raise HTTPException(422, "Selecione um modelo listado pelo provedor")
-            state["selected"][form.stage] = {"provider_id": form.provider_id, "model_id": form.model_id}
+            if not model["chat_compatible"]:
+                raise HTTPException(422, "Esse modelo não aceita as tarefas de texto do editor.")
+            if item["kind"] == "openrouter" and form.model_id == OPENROUTER_FREE_ROUTER and model["price_class"] != "free":
+                raise HTTPException(422, "O catálogo não confirma preço zero para o roteador. Atualize a conexão antes de usar.")
+            state["selected"][form.stage] = {"provider_id": form.provider_id, "model_id": form.model_id,
+                                           "free_only": item["kind"] == "openrouter" and model["price_class"] == "free"}
             vault.save(state)
         return {"stage": form.stage, "provider": item["name"], "model_id": form.model_id}
 

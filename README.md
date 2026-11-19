@@ -1,4 +1,37 @@
-## AutoClips AI Studio 0.7.2 — importa link de live ou vídeo automaticamente
+# AutoClips AI Studio 0.7.3 — catálogo gratuito e OpenRouter Free
+
+Em **Conexões e modelos**, o catálogo agora distingue modelos gratuitos, pagos e de preço não informado. O filtro e a busca são aplicados antes da paginação: o limite antigo de 250 opções não esconde mais os modelos gratuitos. A lista completa vem da API do provedor, sem manter uma lista fixa de IDs antigos.
+
+## IA gratuita em Conexões
+
+- **OpenRouter:** a chave é validada em `/api/v1/key`; o catálogo público `/api/v1/models` é consultado separadamente, incluindo as variantes `:free` e o roteador oficial `openrouter/free`.
+- **Usar automático gratuito:** configura momentos e títulos com `openrouter/free`. O OpenRouter escolhe um modelo gratuito disponível por pedido. As cotas da conta continuam valendo; trocar modelo ou chave não cria capacidade ilimitada.
+- **Proteção de custo:** chamadas gratuitas do OpenRouter incluem `provider.max_price` zero para entrada, saída, requisição e imagem. Não há fallback pago nem plugins pagos. Preço ausente, incompleto ou inválido não é tratado como zero.
+- **Testar IA gratuita:** faz somente um pedido curto ao roteador, mostra o modelo que respondeu e informa erros de chave, saldo, disponibilidade ou cota. Consome uma chamada da cota gratuita e não envia transcrições nem arquivos do usuário.
+- **Limites:** erro 429 pausa a credencial inteira durante `Retry-After`; alternar o modelo não contorna a pausa. Erros não disparam novas tentativas automáticas. A cota diária aparece quando o provedor a informa, com referência à última atualização.
+- **Catálogo Free LLM APIs:** presets para OpenRouter, Groq, Google Gemini, NVIDIA NIM e Mistral AI, derivados do diretório [awesome-freellm-apis](https://github.com/open-free-llm-api/awesome-freellm-apis), com URLs oficiais, links para criar a própria chave e notas sobre planos/cotas. O Gemini usa a base OpenAI compatível `/v1beta/openai`.
+
+O repositório de referência é um catálogo, não um serviço universal de inferência. Não fornece chaves prontas, franquias ilimitadas ou rotação automática entre contas. Os outros provedores exigem a chave e o plano da própria conta; modelos sem preço informado ficam identificados como tal. Esta versão usa o roteamento gratuito nativo do OpenRouter e a escolha manual de provedor por tarefa.
+
+### Atualização de conexões existentes
+
+A migração v0.7.3 reaproveita as credenciais do cofre criptografado. Se o catálogo salvo já contém `openrouter/free` confirmado como gratuito, configura momentos e títulos para o roteador, preservando tarefas vinculadas a outros provedores e guardando as escolhas anteriores. A migração executa uma vez e não realiza inferência. Seleções gratuitas antigas mantêm a proteção caso o catálogo mude de preço. Conexões oficiais do OpenRouter registradas como personalizadas são normalizadas.
+
+Se a conexão ainda não tiver o roteador no catálogo salvo, clique em **Atualizar catálogo** e **Usar automático gratuito**. Conectar uma chave nova tem essa configuração marcada por padrão; pode ser desmarcada. Os modelos pagos continuam consultáveis com rótulo explícito, mediante seleção manual.
+
+### Como verificar
+
+1. Abra **Conexões e modelos**. Reutilize a chave salva ou conecte sua chave OpenRouter.
+2. Confira **Somente gratuitos** e **Automático · somente gratuitos (openrouter/free)**.
+3. Clique em **Usar automático gratuito** e confira as tarefas momentos e títulos.
+4. Clique em **Testar IA gratuita**. Uma resposta real depende da validade da chave, das cotas e da disponibilidade do OpenRouter.
+5. No editor, a avaliação semântica de momentos continua exigindo transcrição e autorização de envio. A instalação de transcrição local permanece opcional. Sem transcrição, o título usa a sugestão local, identificada como tal.
+
+Nenhuma dependência de produção foi acrescentada. A integração usa `httpx` e o cofre já existentes; classificação de preços usa `decimal` da biblioteca padrão. A etapa de revisão foi retirada do seletor porque ainda não executa uma ação no editor.
+
+Fontes: [modelos e preços](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties), [roteador gratuito](https://openrouter.ai/docs/guides/routing/routers/free-router), [limites](https://openrouter.ai/docs/api_reference/limits), [seleção de provedores e teto de preço](https://openrouter.ai/docs/guides/routing/provider-selection), [Gemini compatível com OpenAI](https://ai.google.dev/gemini-api/docs/openai). Validação e limites do teste: `qa/QA_FREE_MODELS_v0.7.3.md`.
+
+## Histórico v0.7.2 — importa link de live ou vídeo automaticamente
 
 Uma única caixa aceita links de YouTube, Twitch e Kick e consulta o estado da transmissão com `yt-dlp` antes de escolher gravação ao vivo ou VOD. Para VOD, a análise gera automaticamente até três prévias verticais 720p revisáveis; para uma live ativa, o usuário encerra a gravação antes de analisar. Não existe postagem automática. **A classificação com um link real depende da disponibilidade do provedor e de capacidade de armazenamento**; see `qa/QA_YOUTUBE_LIVE_CASE_2026-11-19.md` para o teste com um vídeo simulado. Transcrição semântica é opcional e a heurística de picos de áudio não garante bons highlights.
 

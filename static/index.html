@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0d0d14">
-  <title>AutoClips AI Studio v0.7.2</title>
+  <title>AutoClips AI Studio v0.7.3</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,11 +17,11 @@
     <button class="nav" data-tab="connections"><span>◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="live-dot"></div><div><b>Est&uacute;dio H&iacute;brido / Cloud</b><p id="storage-info">Verificando armazenamento...</p></div></div>
-    <div class="sidebar-foot">v0.7.2 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
+    <div class="sidebar-foot">v0.7.3 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
   </aside>
 
   <div class="main-wrap">
-    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.7.2</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
+    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.7.3</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
     <main>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="sources" class="page active">
@@ -49,40 +49,55 @@
         <div class="connection-help">Para entrar nas contas, o administrador registra <b>o aplicativo AutoClips</b> uma vez nas variáveis de ambiente. Depois, todos os acessos são realizados pelo login oficial, sem digitar senha ou secret nesta tela. <b>Nenhum clipe será publicado sem sua aprovação explícita.</b></div>
         <div class="section-heading connection-heading"><div><span class="overline">WORKFLOWS CRIATIVOS</span><h2>Comfy Cloud</h2><p class="hint">Abra seus workflows salvos no editor oficial do Comfy Cloud. A execucao ocorre la, com a sua conta e seus limites de creditos; o AutoClips nao envia arquivos nem gera midia automaticamente.</p></div><button id="reload-comfy" class="outline" type="button">Atualizar workflows</button></div>
         <div id="comfy-workflows" class="comfy-workflows" aria-live="polite"><article class="panel"><p class="hint">Consultando workflows configurados...</p></article></div>
-        <div class="section-heading connection-heading"><div><span class="overline">MULTI-MODELOS</span><h2>Seus provedores de IA</h2></div></div>
+        <div class="section-heading connection-heading" id="ai-connections-heading"><div><span class="overline">INTELIGÊNCIA ARTIFICIAL</span><h2>Conecte seus modelos</h2><p>Modelos gratuitos, limites claros e uma escolha para cada tarefa.</p></div><span class="free-badge">FREE LLM</span></div>
+        <div class="free-model-info"><b>Automático com modelos gratuitos</b><p>O OpenRouter Free escolhe um modelo gratuito disponível para cada pedido. As cotas da conta continuam valendo; trocar de modelo não cria uso ilimitado.</p></div>
+        <p id="connection-feedback" class="connection-feedback hidden" role="status" aria-live="polite"></p>
         <div class="source-grid ai-providers-grid">
           <article class="panel provider-panel">
-            <div class="panel-head"><div class="panel-icon">✦</div><div><h3>OpenRouter</h3><p>Adicione sua chave para carregar automaticamente o catálogo de modelos.</p></div></div>
+            <div class="panel-head"><div class="panel-icon">✦</div><div><h3>OpenRouter</h3><p>Carregue o catálogo completo, incluindo os modelos gratuitos.</p></div></div>
             <form id="openrouter-form">
-              <label class="field-label" for="openrouter-key">CHAVE DE API</label>
+              <label class="field-label" for="openrouter-key">SUA CHAVE DE API</label>
               <input id="openrouter-key" type="password" autocomplete="off" minlength="5" required placeholder="sk-or-v1-••••••••">
-              <button class="primary full" type="submit" style="margin-top:12px">Verificar chave e buscar modelos →</button>
+              <label class="checkline"><input id="openrouter-auto-free" type="checkbox" checked> Usar seleção automática gratuita em momentos e títulos</label>
+              <button class="primary full" type="submit">Validar chave e carregar modelos</button>
             </form>
-            <p class="hint">A chave é enviada apenas ao seu backend, validada no OpenRouter e armazenada criptografada.</p>
+            <p class="hint">Sua chave fica criptografada no servidor. Conectar e atualizar o catálogo não gera conteúdo.</p>
+            <a class="connection-link" href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">Criar ou consultar minha chave ↗</a>
           </article>
           <article class="panel provider-panel">
-            <div class="panel-head"><div class="panel-icon">◎</div><div><h3>Provedor personalizado</h3><p>Para serviços compatíveis com a API OpenAI.</p></div></div>
+            <div class="panel-head"><div class="panel-icon">◎</div><div><h3>Catálogo Free LLM APIs</h3><p>Escolha um provedor e use sua própria chave.</p></div></div>
             <form id="custom-provider-form">
-              <label class="field-label" for="custom-name">NOME</label><input id="custom-name" required minlength="2" maxlength="80" placeholder="Meu provedor">
+              <label class="field-label" for="provider-preset">PROVEDOR DO CATÁLOGO</label>
+              <select id="provider-preset"><option value="custom">Provedor personalizado</option></select>
+              <div id="preset-details" class="preset-details hidden"><p id="preset-price" class="hint"></p><p id="preset-quota" class="hint"></p><a id="preset-key-link" class="connection-link" target="_blank" rel="noopener noreferrer">Criar minha chave ↗</a></div>
+              <label class="field-label spaced" for="custom-name">NOME</label><input id="custom-name" type="text" required minlength="2" maxlength="80" placeholder="Meu provedor">
               <label class="field-label spaced" for="custom-endpoint">URL-BASE HTTPS</label><input id="custom-endpoint" type="url" required placeholder="https://api.exemplo.com/v1">
-              <label class="field-label spaced" for="custom-key">CHAVE DE API</label><input id="custom-key" type="password" autocomplete="off" required minlength="5" placeholder="••••••••">
-              <button class="primary full" type="submit" style="margin-top:12px">Conectar e buscar modelos →</button>
+              <label class="field-label spaced" for="custom-key">SUA CHAVE DE API</label><input id="custom-key" type="password" autocomplete="off" required minlength="5" placeholder="••••••••">
+              <button class="primary full spaced" type="submit">Conectar e carregar modelos</button>
             </form>
-            <p class="hint">Consulta <code>GET /models</code> e usa <code>POST /chat/completions</code>.</p>
+            <p id="catalog-notice" class="hint">O catálogo indica provedores. Cada conta tem suas próprias cotas e condições; chaves de API não são fornecidas.</p>
+            <a id="catalog-source" class="connection-link" href="https://github.com/open-free-llm-api/awesome-freellm-apis" target="_blank" rel="noopener noreferrer">Ver repositório de referência ↗</a>
           </article>
         </div>
         <div id="provider-list" class="provider-list" aria-live="polite"></div>
-        <article class="panel model-picker">
-          <div class="pane-top"><div><h3>Escolha o modelo por tarefa</h3><p class="hint">Pesquise no catálogo do provedor e escolha um modelo para cada etapa.</p></div><span class="ai-label">MODELOS</span></div>
+        <article class="panel model-picker" id="model-picker">
+          <div class="pane-top"><div><h3>Escolha o modelo por tarefa</h3><p class="hint">Os filtros consultam todo o catálogo. Modelos gratuitos aparecem primeiro no OpenRouter.</p></div><span class="ai-label">MODELOS</span></div>
           <div class="model-form-grid">
-            <label>PARA QUAL ETAPA?<select id="model-stage"><option value="moments">Encontrar melhores momentos</option><option value="titles">Títulos e descrições</option><option value="review">Revisão de conteúdo</option></select></label>
+            <label>PARA QUAL TAREFA?<select id="model-stage"><option value="moments">Encontrar melhores momentos</option><option value="titles">Títulos e descrições</option></select></label>
             <label>PROVEDOR<select id="model-provider"><option value="">Primeiro conecte um provedor</option></select></label>
           </div>
-          <label class="field-label spaced" for="model-search">PESQUISAR MODELOS</label><input id="model-search" placeholder="Ex.: Gemini, Qwen, Claude, gratuito...">
-          <label class="field-label spaced" for="model-choice">MODELO DISPONÍVEL</label><select id="model-choice"><option>Escolha um provedor para ver os modelos</option></select>
-          <p id="model-feedback" class="hint" aria-live="polite"></p>
-          <button id="save-model" class="primary full">Usar este modelo na etapa selecionada</button>
+          <div class="model-form-grid spaced">
+            <label>PREÇO<select id="model-cost"><option value="free">Somente gratuitos</option><option value="all">Todos os modelos</option><option value="paid">Pagos</option><option value="unknown">Preço não informado</option></select></label>
+            <label>PESQUISAR MODELOS<input id="model-search" type="search" maxlength="100" placeholder="Nome ou ID do modelo" autocomplete="off"></label>
+          </div>
+          <p id="model-count" class="hint" role="status" aria-live="polite">Conecte um provedor para consultar os modelos.</p>
+          <label class="field-label spaced" for="model-choice">MODELO DISPONÍVEL</label><select id="model-choice" disabled><option value="">Escolha um provedor para ver os modelos</option></select>
+          <button id="load-more-models" class="outline spaced hidden" type="button">Carregar mais modelos</button>
+          <p id="model-price-note" class="hint">Gratuito significa preço informado como zero. Disponibilidade e limites dependem do provedor e da sua conta.</p>
+          <p id="model-feedback" class="hint" role="status" aria-live="polite"></p>
+          <button id="save-model" class="primary full" type="button" disabled>Usar este modelo na tarefa selecionada</button>
           <div id="selected-models" class="selected-models"></div>
+          <p class="hint">A análise de momentos com IA precisa de uma transcrição e da autorização de envio no editor. Sem transcrição, os títulos continuam usando a sugestão local.</p>
         </article>
       </section>
     </main>

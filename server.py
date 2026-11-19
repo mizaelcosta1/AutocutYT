@@ -32,11 +32,13 @@ from autoclips import (MEDIA_EXTENSIONS, analyze, download_vod, generate_srt, tr
 from timeline import (TimelineError, apply_command, new_timeline, rebase_words, total_duration)
 from timeline_export import render_project
 import studio_auth
+import logging
 from source_detect import detect_source_kind
-from integrations import (Vault, build_router, generate_clip_metadata, get_selected,
+from integrations import (Vault, build_router, generate_clip_metadata, get_selected, migrate_free_defaults,
                           rerank_remote, upload_youtube_video)
+from ai_runtime import ModelRequestError
 
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.3"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -56,6 +58,11 @@ PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 
 app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None)
 CONNECTION_VAULT = Vault(ROOT)
+FREE_MODELS_UPGRADE = migrate_free_defaults(CONNECTION_VAULT)
+if FREE_MODELS_UPGRADE.get("migrated"):
+    logging.getLogger("uvicorn.error").info(
+        "AI free-mode upgrade completed; configured tasks: %s",
+        ", ".join(FREE_MODELS_UPGRADE.get("tasks_configured", [])) or "none")
 app.include_router(studio_auth.router)
 app.include_router(build_router(CONNECTION_VAULT))
 
@@ -921,6 +928,9 @@ def ai_clip_metadata(video_id: str, clip_id: str):
             excerpt = " ".join(w["text"] for w in words if clip["start"] <= w["start"] <= clip["end"])
     try:
         meta = generate_clip_metadata(CONNECTION_VAULT, excerpt, clip.get("title", ""))
+    except ModelRequestError as exc:
+        raise HTTPException(exc.status_code, str(exc),
+                            headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None) from None
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Falha ao gerar metadados: {exc}") from exc
     with LOCK:
