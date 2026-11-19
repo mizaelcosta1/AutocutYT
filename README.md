@@ -1,3 +1,7 @@
+## AutoClips AI Studio 0.7.2 — importa link de live ou vídeo automaticamente
+
+Uma única caixa aceita links de YouTube, Twitch e Kick e consulta o estado da transmissão com `yt-dlp` antes de escolher gravação ao vivo ou VOD. Para VOD, a análise gera automaticamente até três prévias verticais 720p revisáveis; para uma live ativa, o usuário encerra a gravação antes de analisar. Não existe postagem automática. **A classificação com um link real depende da disponibilidade do provedor e de capacidade de armazenamento**; see `qa/QA_YOUTUBE_LIVE_CASE_2026-11-19.md` para o teste com um vídeo simulado. Transcrição semântica é opcional e a heurística de picos de áudio não garante bons highlights.
+
 # AutoClips AI Studio v0.7.1 — Google Login + Timeline + Use-case QA
 
 **Base:** código v0.5.0 fornecido pelo usuário, preservando upload, VOD, lives, clipes automáticos, OAuth de canal e publicação aprovada no YouTube; agora autenticação de acesso ao Studio via Google OIDC (separada da autorização YouTube).

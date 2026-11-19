@@ -32,10 +32,11 @@ from autoclips import (MEDIA_EXTENSIONS, analyze, download_vod, generate_srt, tr
 from timeline import (TimelineError, apply_command, new_timeline, rebase_words, total_duration)
 from timeline_export import render_project
 import studio_auth
+from source_detect import detect_source_kind
 from integrations import (Vault, build_router, generate_clip_metadata, get_selected,
                           rerank_remote, upload_youtube_video)
 
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.2"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -248,6 +249,7 @@ class LiveStart(BaseModel):
     authorized: bool
     analyze_after: bool = True
     transcribe_after: bool = False
+    auto_preview: bool = False
 
 
 class VodDownloadRequest(BaseModel):
@@ -255,6 +257,14 @@ class VodDownloadRequest(BaseModel):
     authorized: bool
     analyze_after: bool = True
     transcribe_after: bool = False
+    auto_preview: bool = False
+
+
+class AutoSourceRequest(BaseModel):
+    url: str
+    authorized: bool
+    analyze_after: bool = True
+    auto_preview: bool = True
 
 
 class PublishYouTubeRequest(BaseModel):
@@ -686,12 +696,18 @@ def import_vod(req: VodDownloadRequest):
             "thumbnail": str(thumb) if thumb else None,
         }
         save_video(item)
+        previews = 0
         if req.analyze_after:
             model = "small" if req.transcribe_after else None
             job_path = analyze(downloaded, None, model, 5, 40)
             item["job_path"] = str(job_path)
             save_video(item)
-        return {"video_id": vid, "name": downloaded.name}
+            if req.auto_preview:
+                manifest = read_json(job_path / "manifest.json", {"clips": []})
+                for clip in manifest.get("clips", [])[:3]:
+                    render_one(vid, clip["id"], "preview", "blur", False)
+                    previews += 1
+        return {"video_id": vid, "name": downloaded.name, "previews": previews}
 
     return {"task_id": schedule("download-vod", job)}
 
@@ -789,6 +805,7 @@ def show_manifest(video_id: str):
     manifest, _, _ = get_manifest(video_id)
     return {"transcription_engine": manifest["transcription_engine"],
             "ranking": manifest["ranking"], "duration": manifest["probe"]["duration"],
+            "review_required": manifest.get("review_required", True),
             "clips": [{k: v for k, v in c.items() if k not in {"preview", "final"}} | {
                 "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview" if c.get("preview") else None,
                 "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final" if c.get("final") else None,
@@ -1103,7 +1120,13 @@ def watch_live(live_id: str, proc: subprocess.Popen, target: Path, logs):
             job_path = analyze(result, None, model, 5, 40)
             item["job_path"] = str(job_path)
             save_video(item)
-            return {"video_id": vid, "proposals": len(read_json(job_path / "manifest.json", {})["clips"])}
+            proposals = read_json(job_path / "manifest.json", {"clips": []})["clips"]
+            previews = 0
+            if info.get("auto_preview"):
+                for clip in proposals[:3]:
+                    render_one(vid, clip["id"], "preview", "blur", False)
+                    previews += 1
+            return {"video_id": vid, "proposals": len(proposals), "previews": previews}
         task_id = schedule("analyze-after-live", auto_analyze)
         with LOCK:
             info["analysis_task_id"] = task_id
@@ -1127,17 +1150,57 @@ def start_live(req: LiveStart):
     live_id = uuid.uuid4().hex
     target = RECORDINGS / f"live_{plat}_{live_id}.ts"
     logpath = RECORDINGS / f"live_{plat}_{live_id}.log"
-    loghandle = logpath.open("w", encoding="utf-8")
-    proc = subprocess.Popen(["streamlink", "--retry-streams", "30", "--output", str(target), req.url, "best"],
-                            stdout=loghandle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     with LOCK:
+        if any(record.get("url") == req.url and record.get("status") in
+               {"starting", "recording", "stopping"} for record in LIVE.values()):
+            raise HTTPException(409, "Esta live ja esta sendo gravada; acompanhe em Lives")
+        loghandle = logpath.open("w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(["streamlink", "--retry-streams", "30", "--output", str(target), req.url, "best"],
+                                    stdout=loghandle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        except OSError as exc:
+            loghandle.close()
+            raise HTTPException(502, "Falha ao iniciar o gravador Streamlink") from exc
         LIVE[live_id] = {"id": live_id, "platform": plat, "url": req.url,
                          "status": "starting", "created_at": utcnow(), "process": proc,
                          "target": target, "logpath": logpath,
                          "analyze_after": req.analyze_after,
-                         "transcribe_after": req.transcribe_after}
+                         "transcribe_after": req.transcribe_after,
+                         "auto_preview": req.auto_preview}
     threading.Thread(target=watch_live, args=(live_id, proc, target, loghandle), daemon=True).start()
     return {"id": live_id, "platform": plat, "status": "starting"}
+
+
+@app.post("/api/source/auto")
+def import_source_auto(req: AutoSourceRequest):
+    """Resolve the real stream status, not whether the URL contains '/live/'.
+
+    For active lives, capture must be stopped before cutting a complete media
+    file. A recorded VOD queues analysis plus up to three 720p review renders.
+    No content is published automatically.
+    """
+    if not req.authorized:
+        raise HTTPException(400, "Confirme que tem direito de editar ou gravar este conteudo")
+    try:
+        platform(req.url.strip())
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    if not shutil.which("yt-dlp"):
+        raise HTTPException(503, "yt-dlp nao instalado no servidor")
+    try:
+        kind = detect_source_kind(req.url.strip())
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    if kind == "live":
+        recording = start_live(LiveStart(url=req.url.strip(), authorized=True,
+                                         analyze_after=req.analyze_after,
+                                         auto_preview=req.auto_preview))
+        return {"kind": "live", "live_id": recording["id"],
+                "status": "starting", "message": "Encerre a gravacao para iniciar os cortes"}
+    task = import_vod(VodDownloadRequest(url=req.url.strip(), authorized=True,
+                                         analyze_after=req.analyze_after,
+                                         auto_preview=req.auto_preview))
+    return {"kind": "vod", "task_id": task["task_id"]}
 
 
 @app.post("/api/live/{live_id}/stop")

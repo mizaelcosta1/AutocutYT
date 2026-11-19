@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0d0d14">
-  <title>AutoClips AI Studio v0.7.1</title>
+  <title>AutoClips AI Studio v0.7.2</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,11 +17,11 @@
     <button class="nav" data-tab="connections"><span>◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="live-dot"></div><div><b>Est&uacute;dio H&iacute;brido / Cloud</b><p id="storage-info">Verificando armazenamento...</p></div></div>
-    <div class="sidebar-foot">v0.7.1 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
+    <div class="sidebar-foot">v0.7.2 &nbsp; / &nbsp; GOOGLE LOGIN + YOUTUBE OAUTH<br><a style="color:#b5bfff" href="/logout">Sair da conta Google</a></div>
   </aside>
 
   <div class="main-wrap">
-    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.7.1</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
+    <header class="topbar"><div class="mobile-brand">&#9654; <b>AutoClips AI</b></div><span class="eyebrow">WORKSPACE / v0.7.2</span><div class="platforms"><span class="pill"><i class="dot tw"></i>Twitch</span><span class="pill"><i class="dot yt"></i>YouTube</span><span class="pill"><i class="dot kick"></i>Kick</span></div></header>
     <main>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="sources" class="page active">
@@ -30,7 +30,7 @@
         <div class="source-grid three-cols">
           <article class="panel upload-panel"><div class="panel-head"><div class="panel-icon">&#8679;</div><div><h3>Enviar v&iacute;deo</h3><p>Do celular ou computador</p></div></div><div class="dropzone" id="dropzone"><div class="drop-illustration">&#8679;</div><b>Arraste o v&iacute;deo ou toque para escolher</b><p>MP4, MKV, MOV, WEBM e TS</p><input id="video-file" type="file" accept="video/*,.mkv,.ts,.webm"><span class="outlined">Selecionar arquivo</span></div><div id="file-label" class="file-label hidden"></div><label class="checkline"><input type="checkbox" id="upload-authorized"> Tenho direito de editar este v&iacute;deo</label><button id="btn-upload" class="primary full" disabled>Enviar para o est&uacute;dio <span>&rarr;</span></button><div class="progress-wrap hidden" id="upload-progress"><div class="progress-rail"><div id="upload-bar"></div></div><span id="upload-text">0%</span></div><p class="hint">Envio em blocos recuper&aacute;veis de 8 MB.</p></article>
 
-          <article class="panel vod-panel"><div class="panel-head"><div class="panel-icon">&#128279;</div><div><h3>Importar link de VOD</h3><p>Baixe um v&iacute;deo j&aacute; publicado</p></div></div><label class="field-label" for="vod-url">LINK DO V&Iacute;DEO (YOUTUBE / TWITCH / KICK)</label><input id="vod-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><div class="platform-desc"><span class="supported">YT-DLP</span><span class="supported">MP4 1080P</span></div><label class="checkline"><input type="checkbox" id="vod-auto" checked> Sugerir cortes automaticamente ao baixar</label><label class="checkline"><input type="checkbox" id="vod-authorized"> Tenho direito de editar este v&iacute;deo</label><button id="btn-vod" class="primary full">Baixar e importar VOD <span>&rarr;</span></button><p class="hint" id="vod-capability">Converte automaticamente para MP4 compat&iacute;vel com o editor.</p></article>
+          <article class="panel vod-panel"><div class="panel-head"><div class="panel-icon">&#128279;</div><div><h3>Importar link de v&iacute;deo ou live</h3><p>Detecta live ativa ou grava&ccedil;&atilde;o arquivada</p></div></div><label class="field-label" for="vod-url">LINK DO V&Iacute;DEO (YOUTUBE / TWITCH / KICK)</label><input id="vod-url" type="url" placeholder="https://www.youtube.com/watch?v=..."><div class="platform-desc"><span class="supported">YT-DLP</span><span class="supported">MP4 1080P</span></div><label class="checkline"><input type="checkbox" id="vod-auto" checked> Gerar sugest&otilde;es e pr&eacute;vias automaticamente (720p)</label><label class="checkline"><input type="checkbox" id="vod-authorized"> Tenho direito de editar este v&iacute;deo</label><button id="btn-vod" class="primary full">Identificar e preparar cortes <span>&rarr;</span></button><p class="hint" id="vod-capability">Em lives ativas, encerre a grava&ccedil;&atilde;o para preparar os cortes. N&atilde;o publica automaticamente.</p></article>
 
           <article class="panel live-panel"><div class="panel-head"><div class="panel-icon live-icon">&#9679;</div><div><h3>Acompanhar uma live</h3><p>Grave uma transmiss&atilde;o ao vivo</p></div></div><label class="field-label" for="live-url">LINK DA TRANSMISS&Atilde;O</label><input id="live-url" type="url" placeholder="https://www.twitch.tv/canal"><div class="platform-desc"><span class="supported">TWITCH</span><span class="supported">YOUTUBE</span><span class="supported">KICK</span></div><div class="live-explainer"><span class="live-signal">&#9679;</span><div><b>Grava&ccedil;&atilde;o integral</b><p>O est&uacute;dio grava o conte&uacute;do e remuxa para MP4 ao terminar.</p></div></div><label class="checkline"><input type="checkbox" id="live-auto" checked> Sugerir cortes automaticamente ao terminar</label><label class="checkline"><input type="checkbox" id="live-authorized"> Tenho autoriza&ccedil;&atilde;o para gravar essa live</label><button id="btn-live" class="primary full">Iniciar acompanhamento <span>&rarr;</span></button><p class="hint" id="live-capability">Verificando suporte no servidor...</p><div id="lives-list"></div></article>
         </div>

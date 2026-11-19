@@ -208,24 +208,29 @@
 
     const btn = $("#btn-vod");
     btn.disabled = true;
-    btn.textContent = "Baixando VOD no servidor...";
+    btn.textContent = "Verificando live ou gravação...";
     try {
-      const started = await api("/api/vod/download", {
+      const started = await api("/api/source/auto", {
         method: "POST",
-        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter }),
+        body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter, auto_preview: analyzeAfter }),
       });
-      showNotice("Download iniciado em segundo plano. Aguarde...", "info");
-      const res = await pollTask(started.task_id, (txt) => (btn.textContent = txt));
-      showNotice(`VOD importado: ${res.name}`, "ok");
       $("#vod-url").value = "";
-      await loadLibrary();
-      const video = state.videos.find((v) => v.id === res.video_id);
-      if (video) openEditor(video);
+      if (started.kind === "live") {
+        showNotice("Live detectada: captura solicitada. Confira o status em Lives e encerre para gerar os cortes.", "info");
+        await loadLives();
+      } else {
+        showNotice("VOD identificado. Baixando e preparando cortes de revisão...", "info");
+        const res = await pollTask(started.task_id, (txt) => (btn.textContent = txt));
+        showNotice(`VOD importado: ${res.name}. Prévia(s): ${res.previews || 0}`, "ok");
+        await loadLibrary();
+        const video = state.videos.find((v) => v.id === res.video_id);
+        if (video) openEditor(video);
+      }
     } catch (err) {
       showNotice(err.message, "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "Baixar e importar VOD <span>&rarr;</span>";
+      btn.innerHTML = "Identificar e preparar cortes <span>&rarr;</span>";
     }
   });
 
@@ -284,7 +289,7 @@
         method: "POST",
         body: JSON.stringify({ url, authorized: true, analyze_after: analyzeAfter }),
       });
-      showNotice("Gravacao da live iniciada!", "ok");
+      showNotice("Captura solicitada. Confira o status em Lives.", "ok");
       $("#live-url").value = "";
       loadLives();
     } catch (err) {

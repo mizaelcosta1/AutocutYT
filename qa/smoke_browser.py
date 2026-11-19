@@ -81,7 +81,7 @@ def main():
             html = html.replace('</head>', '<style>' + (ROOT/'static/app.css').read_text(encoding='utf-8') + '</style></head>')
             html = html.replace('</body>', '<script>' + FETCH_BRIDGE + '</script><script>' + (ROOT/'static/app.js').read_text(encoding='utf-8') + '</script><script>' + (ROOT/'static/connections.js').read_text(encoding='utf-8') + '</script></body>')
             page.set_content(html)
-            assert 'AutoClips AI Studio v0.7.1' in page.title()
+            assert 'AutoClips AI Studio v0.7.2' in page.title()
             page.locator('.mobile-tabs [data-tab="connections"]').click()
             link=page.locator('#comfy-workflows .comfy-launch'); link.wait_for(timeout=10000)
             assert link.get_attribute('target')=='_blank'
