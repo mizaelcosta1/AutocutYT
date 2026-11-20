@@ -795,3 +795,35 @@ button.record:hover:not(:disabled) { background: #ff7b89; filter: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* AutoClips 0.8.0 identity — palette sampled from the supplied reference. */
+:root { --bg:#080808; --panel:#151515; --panel-2:#202020; --border:#383838; --text:#fff; --muted:#bdbdbd; --accent:#FF422A; --accent-2:#FF7668; --danger:#FF422A; }
+body { background:var(--bg); color:var(--text); }
+.sidebar { background:#050505; border-right-color:#343434; }
+.topbar { background:#080808ed; border-bottom-color:#333; }
+.side-info,.panel,.video-card,.empty-state,.connection-help { background:#151515; border-color:#383838; }
+.hero { background:radial-gradient(circle at 85% 30%,#ff422a25,transparent 55%),linear-gradient(135deg,#1b1b1b,#0a0a0a); border-color:#3c3c3c; }
+.brand-icon { background:linear-gradient(135deg,#FF422A,#ff806f); color:#000; }
+.brand .accent,.overline,.hero h1 span,.mobile-tabs button.active { color:#FF7668; }
+.nav.active { background:#351711; border-color:#FF422A; color:#fff; }
+.nav:hover { background:#1d1d1d; }
+.panel-icon { background:#2a1714; color:#ff8a7c; }
+.dropzone { border-color:#555; }
+.dropzone:hover,.dropzone.drag { border-color:#FF422A; background:#ff422a12; }
+input:focus,select:focus,textarea:focus { border-color:#FF422A; }
+.checkline input { accent-color:#FF422A; }
+button.primary { background:#FF422A; border-color:#ff6856; color:#090909; }
+button.primary:hover:not(:disabled) { background:#ff6958; filter:none; }
+button.outline:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline-color:#FF422A; }
+.notice { background:#241411; border-color:#804034; color:#fff; }
+.notice.error { background:#351313; border-color:#FF422A; color:#ffe5e2; }
+.notice.ok { background:#142218; border-color:#347a49; color:#e1ffe9; }
+#video-activity:not([hidden]) { border-color:#874437; background:#241411; color:#fff; }
+.live-icon,.live-badge,.live-badge.is-recording { background:#351711; border-color:#FF422A; color:#ff9b8e; }
+.video-badge,.supported,.clip-badge { background:#202020; border-color:#444; color:#fff; }
+.clip-score { color:#ff9b8e; }
+.subtitle-preview { background:linear-gradient(135deg,#333,#111 55%,#3a1713); border-color:#5a3833; }
+#subtitle-sample { color:#fff; }
+.download-link,.connection-link { color:#ff8b7c; border-color:#8b4439; }
+.download-link:hover { background:#351711; }
+.storage-dot { background:#FF422A; }

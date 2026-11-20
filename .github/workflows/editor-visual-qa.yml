@@ -1,0 +1,36 @@
+name: AutoClips editor visual regression
+on:
+  push:
+    branches: [main]
+    paths:
+      - "static/layout-editor.js"
+      - "static/layout-editor.css"
+      - "static/app.css"
+      - "static/timeline.css"
+      - "static/index.html"
+      - "static/timeline.html"
+      - "qa/test_layout_editor_dom.cjs"
+      - ".github/workflows/editor-visual-qa.yml"
+  pull_request:
+    paths:
+      - "static/layout-editor.js"
+      - "static/layout-editor.css"
+      - "static/app.css"
+      - "static/timeline.css"
+      - "static/index.html"
+      - "static/timeline.html"
+      - "qa/test_layout_editor_dom.cjs"
+jobs:
+  editor-dom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install DOM test dependency
+        run: |
+          npm init -y
+          npm install --no-audit --no-fund jsdom@26
+      - name: Run editor workspace regression
+        run: node --test qa/test_layout_editor_dom.cjs qa/test_layout_integration_dom.cjs

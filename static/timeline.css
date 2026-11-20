@@ -155,3 +155,20 @@ footer { color: var(--muted); font-size: .75rem; text-align: center; padding: 9p
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* AutoClips 0.8.0 identity — black, coral #FF422A and white. */
+:root { --bg:#080808; --surface:#151515; --surface2:#202020; --border:#383838; --text:#fff; --muted:#bdbdbd; --cyan:#FF422A; --red:#FF422A; }
+body { background:#080808; color:#fff; }
+.topbar,.panel,.nested { background:#151515; border-color:#383838; }
+.topbar { background:#080808; }
+.primary { background:#FF422A; border-color:#ff6856; color:#080808; }
+.primary:hover:not(:disabled) { background:#ff6958; }
+.secondary { background:#242424; border-color:#454545; color:#fff; }
+.secondary:hover:not(:disabled) { background:#333; }
+.danger { background:#351711; border-color:#FF422A; color:#ffb1a8; }
+:is(button,input,a,select,summary):focus-visible { outline-color:#FF422A; }
+.skip-link { background:#FF422A; color:#080808; }
+.timeline-segment,.segment.selected { border-color:#FF422A; }
+.timeline-segment.selected,.segment.selected { background:#351711; }
+.download { color:#ff8b7c; border-color:#8b4439; }
+.player-box { background:#050505; }

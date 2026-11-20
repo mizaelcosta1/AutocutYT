@@ -19,7 +19,7 @@
     const root = typeof container === 'string' ? document.querySelector(container) : container;
     const select = typeof layoutSelect === 'string' ? document.querySelector(layoutSelect) : layoutSelect;
     if (!root || !select) throw new Error('Editor de composição sem elemento necessário.');
-    let id = videoId, config = defaults(), presets = [], custom = [], region = 'face', candidates = [], destroyed = false, saveTimer, requestGeneration = 0, dirtyCoordinates = false, loaded = false, revision = 0, persistedRevision = 0, saveQueue = Promise.resolve();
+    let id = videoId, config = defaults(), presets = [], custom = [], region = 'face', candidates = [], activePanel = 'models', destroyed = false, saveTimer, requestGeneration = 0, dirtyCoordinates = false, loaded = false, revision = 0, persistedRevision = 0, saveQueue = Promise.resolve();
     let preferredSubtitles = null;
     const restoreSubtitles = () => {
       if (loaded && typeof preferredSubtitles === 'boolean') onPresetSubtitles(preferredSubtitles);
@@ -33,22 +33,69 @@
     const listeners = new AbortController();
     const activity = window.VideoActivity;
     const selectLabel = document.querySelector(`label[for="${select.id}"]`) || select.closest('label');
-    root.innerHTML = `<fieldset class="le-shell" disabled><div class="le-head"><strong>Formato e composição</strong><span>Escolha um modelo e ajuste como quiser.</span></div>
-      <p class="le-status" role="status" aria-live="polite"></p><div class="le-presets" aria-label="Modelos de composição"></div>
-      <div class="le-custom"><label>Salvar modelo <input class="le-name" type="text" maxlength="60" placeholder="Nome do modelo"></label><button type="button" class="le-save">Salvar</button></div>
-      <div class="le-controls"><label>Formato <select data-field="aspect"><option value="9:16">Vertical · 9:16</option><option value="16:9">Horizontal · 16:9</option></select></label>
-      <label class="le-split">Altura do rosto <input type="range" min="20" max="65" step="1" data-field="split_ratio"><output></output></label>
-      <label class="le-pip">Posição do rosto <select data-field="pip_position"><option value="top-left">Superior esquerda</option><option value="top-right">Superior direita</option><option value="bottom-left">Inferior esquerda</option><option value="bottom-right">Inferior direita</option></select></label>
-      <label class="le-pip">Tamanho do rosto <input type="range" min="18" max="45" step="1" data-field="pip_scale"><output></output></label>
-      <label class="le-composite">Ajuste do jogo <select data-field="game_fit"><option value="contain">Mostrar inteiro</option><option value="cover">Preencher área</option></select></label>
-      <label class="le-caption-position">Posição da legenda <select data-field="caption_position"><option value="bottom">Embaixo</option><option value="middle">No meio</option><option value="top">Em cima</option></select></label></div>
-      <details class="le-areas"><summary>Ajustar áreas do vídeo original</summary><p>Escolha a área do rosto e a do jogo. Desenhe uma área no quadro, arraste o contorno ou ajuste os valores abaixo.</p>
-      <div class="le-row"><button type="button" data-region="face">Rosto</button><button type="button" data-region="gameplay">Jogo</button><button type="button" class="le-detect">Procurar rostos</button><button type="button" class="le-use-frame">Usar quadro do player</button></div>
-      <div class="le-candidates"></div>
-      <div class="le-stage"><img class="le-frame" alt="Quadro do vídeo original para ajustar as áreas"><div class="le-box" tabindex="0" role="group" aria-label="Área selecionada. Arraste ou use os campos abaixo."><span class="le-resize" aria-hidden="true"></span></div></div>
-      <div class="le-numbers"><label>Esquerda %<input type="number" min="0" max="100" step="0.1" data-coordinate="x"></label><label>Topo %<input type="number" min="0" max="100" step="0.1" data-coordinate="y"></label><label>Largura %<input type="number" min="2" max="100" step="0.1" data-coordinate="w"></label><label>Altura %<input type="number" min="2" max="100" step="0.1" data-coordinate="h"></label></div>
-      <p class="le-error" role="status" aria-live="polite"></p><button type="button" class="le-reset">Usar vídeo inteiro nesta área</button></details></fieldset>`;
+    root.innerHTML = `<fieldset class="le-shell" disabled>
+      <div class="le-head"><div><span class="le-kicker">EDIÇÃO VISUAL</span><strong>Monte seu corte</strong><span>Escolha uma etapa. Os ajustes aparecem somente quando você precisa deles.</span></div><p class="le-status" role="status" aria-live="polite"></p></div>
+      <nav class="le-nav" aria-label="Etapas de edição">
+        <button type="button" data-panel="models" aria-pressed="true"><span>01</span> Modelos</button>
+        <button type="button" data-panel="composition" aria-pressed="false"><span>02</span> Composição</button>
+        <button type="button" data-panel="regions" aria-pressed="false"><span>03</span> Rosto e jogo</button>
+      </nav>
+      <section class="le-panel" data-panel-content="models">
+        <div class="le-current-card"><span class="le-current-thumb le-thumb-standard" aria-hidden="true"><i></i><b></b><em></em></span><div><small>MODELO ATUAL</small><strong class="le-current-name">Personalizado</strong><p class="le-current-desc">Escolha uma composição pronta ou continue com seus próprios ajustes.</p></div></div>
+        <div class="le-model-actions"><button type="button" class="le-open-presets">Escolher modelo</button><button type="button" class="le-save-current">Salvar como meu modelo</button></div>
+        <p class="le-help">Os modelos são pontos de partida. Depois de aplicar, você pode ajustar cada área sem alterar o vídeo original.</p>
+      </section>
+      <section class="le-panel" data-panel-content="composition" hidden>
+        <div class="le-section-title"><strong>Formato e distribuição</strong><span>Como o vídeo final será organizado.</span></div>
+        <div class="le-controls">
+          <label>Formato do vídeo<select data-field="aspect"><option value="9:16">Vertical · 9:16</option><option value="16:9">Horizontal · 16:9</option></select></label>
+          <label class="le-split">Altura do quadro do rosto<input type="range" min="20" max="65" step="1" data-field="split_ratio"><output></output></label>
+          <label class="le-pip">Posição do rosto<select data-field="pip_position"><option value="top-left">Superior esquerda</option><option value="top-right">Superior direita</option><option value="bottom-left">Inferior esquerda</option><option value="bottom-right">Inferior direita</option></select></label>
+          <label class="le-pip">Tamanho do rosto<input type="range" min="18" max="45" step="1" data-field="pip_scale"><output></output></label>
+          <label class="le-composite">Ajuste da imagem do jogo<select data-field="game_fit"><option value="contain">Mostrar imagem inteira</option><option value="cover">Preencher o quadro</option></select></label>
+          <label class="le-caption-position">Posição da legenda<select data-field="caption_position"><option value="bottom">Embaixo</option><option value="middle">No meio</option><option value="top">Em cima</option></select></label>
+        </div>
+        <p class="le-help">Dica: escolha primeiro o formato e a distribuição. Depois ajuste o rosto e o jogo na etapa seguinte.</p>
+      </section>
+      <section class="le-panel" data-panel-content="regions" hidden>
+        <div class="le-section-title"><strong>Escolha as áreas na gravação original</strong><span>Arraste no quadro para desenhar, mover ou redimensionar a região.</span></div>
+        <details class="le-areas" open><summary>Selecionar área do rosto ou do jogo</summary>
+          <p>Escolha uma área abaixo. No vídeo, arraste para desenhar; arraste a borda para mover; use a alça coral para redimensionar.</p>
+          <div class="le-row"><button type="button" data-region="face" aria-pressed="true">Rosto</button><button type="button" data-region="gameplay" aria-pressed="false">Tela do jogo</button></div>
+          <div class="le-row le-tools"><button type="button" class="le-detect">Procurar rosto automaticamente</button><button type="button" class="le-use-frame">Usar quadro do player</button></div>
+          <div class="le-candidates"></div>
+          <div class="le-stage"><img class="le-frame" alt="Quadro da gravação original para selecionar rosto ou jogo"><div class="le-box" tabindex="0" role="group" aria-label="Área selecionada. Arraste para mover ou use a alça para redimensionar."><span class="le-resize" aria-hidden="true"></span></div></div>
+          <div class="le-numbers"><label>Esquerda %<input type="number" min="0" max="100" step="0.1" data-coordinate="x"></label><label>Topo %<input type="number" min="0" max="100" step="0.1" data-coordinate="y"></label><label>Largura %<input type="number" min="2" max="100" step="0.1" data-coordinate="w"></label><label>Altura %<input type="number" min="2" max="100" step="0.1" data-coordinate="h"></label></div>
+          <p class="le-error" role="status" aria-live="polite"></p><button type="button" class="le-reset">Restaurar área inteira</button>
+        </details>
+      </section>
+      <dialog class="le-modal" aria-labelledby="le-modal-title"><div class="le-modal-head"><div><span class="le-kicker">GALERIA</span><strong id="le-modal-title">Escolha um modelo pronto</strong><p>Você poderá editar o modelo depois de aplicá-lo.</p></div><button type="button" class="le-close-presets" aria-label="Fechar modelos">×</button></div>
+        <div class="le-presets" aria-label="Modelos de composição"></div>
+        <div class="le-custom"><label>Nome do meu modelo<input class="le-name" type="text" maxlength="60" placeholder="Ex.: Meu corte de gameplay"></label><button type="button" class="le-save">Salvar modelo</button></div>
+      </dialog>
+    </fieldset>`;
     const $ = s => root.querySelector(s);
+    function setPanel(panel) {
+      activePanel = ['models','composition','regions'].includes(panel) ? panel : 'models';
+      root.querySelectorAll('[data-panel]').forEach(button => {
+        const active = button.dataset.panel === activePanel;
+        button.setAttribute('aria-pressed', String(active));
+      });
+      root.querySelectorAll('[data-panel-content]').forEach(section => {
+        section.hidden = section.dataset.panelContent !== activePanel;
+      });
+    }
+    function closePresets() {
+      const dialog = $('.le-modal');
+      if (dialog?.open && typeof dialog.close === 'function') dialog.close();
+      else dialog?.removeAttribute('open');
+    }
+    function openPresets() {
+      const dialog = $('.le-modal');
+      if (!dialog) return;
+      if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+      else dialog.setAttribute('open','');
+    }
     const status = msg => { if (!destroyed) $('.le-status').textContent = msg; };
     const enable = active => { active = active && !activity.busy(id); if (!destroyed) { $('.le-shell').disabled = !active; select.disabled = !active; } };
     window.addEventListener('video-activity', ({detail}) => {
@@ -66,13 +113,18 @@
     function notify() { revision++; onChange(); clearTimeout(saveTimer); if (loaded) saveTimer = setTimeout(() => flush().catch(e => status(e.message)), 700); }
     function paint() {
       $('.le-presets').innerHTML = [...presets, ...custom].map(p => `<div class="le-card-wrap"><button type="button" class="le-card" data-preset="${esc(p.id)}" aria-label="${esc(p.name)}: ${esc(p.description || '')}"><span class="le-thumb le-thumb-${esc(p.layout_config?.mode || 'standard')}" aria-hidden="true"><i></i><b></b><em></em></span><strong>${esc(p.name)}</strong><small>${esc(p.description || '')}</small></button>${custom.includes(p) ? `<button type="button" class="le-delete" data-delete="${esc(p.id)}" aria-label="Excluir modelo ${esc(p.name)}">×</button>` : ''}</div>`).join('');
+      const activePreset = [...presets,...custom].find(p => p.layout === select.value && same(p.layout_config,config));
+      $('.le-current-name').textContent = activePreset?.name || 'Personalizado';
+      $('.le-current-desc').textContent = activePreset?.description || 'Ajustes próprios. Salve como modelo para reutilizar em outros vídeos.';
+      const thumb = $('.le-current-thumb');
+      thumb.className = `le-current-thumb le-thumb le-thumb-${esc(config.mode)}`;
+      root.querySelectorAll('[data-preset]').forEach(button => button.classList.toggle('is-active', activePreset && button.dataset.preset === String(activePreset.id)));
+      setPanel(activePanel);
       root.querySelectorAll('[data-field]').forEach(el => { const v = config[el.dataset.field]; el.value = el.type === 'range' ? Math.round(v * 100) : v; if (el.nextElementSibling?.tagName === 'OUTPUT') el.nextElementSibling.textContent = `${el.value}%`; });
       root.querySelectorAll('.le-split').forEach(el => el.hidden = !['split','split_caption'].includes(config.mode));
       root.querySelectorAll('.le-pip').forEach(el => el.hidden = config.mode !== 'pip');
       root.querySelectorAll('.le-caption-position').forEach(el => el.hidden = ['split','split_caption'].includes(config.mode));
       root.querySelectorAll('.le-composite').forEach(el => el.hidden = config.mode === 'standard');
-      $('.le-areas').hidden = config.mode === 'standard';
-      select.hidden = config.mode !== 'standard'; if (selectLabel) selectLabel.hidden = select.hidden;
       root.querySelectorAll('[data-region]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.region === region)));
       const box = config[region]; const graphic = $('.le-box'); graphic.hidden = !box;
       if (box) { Object.assign(graphic.style, {left:`${box.x*100}%`,top:`${box.y*100}%`,width:`${box.w*100}%`,height:`${box.h*100}%`}); }
@@ -121,8 +173,13 @@
       if (!loaded || destroyed) return;
       const actionGeneration = requestGeneration, actionId = id;
       const currentAction = () => !destroyed && loaded && actionGeneration === requestGeneration && actionId === id;
+      const panel = e.target.closest('[data-panel]');
+      if (panel) { setPanel(panel.dataset.panel); return; }
+      if (e.target.closest('.le-open-presets')) { openPresets(); return; }
+      if (e.target.closest('.le-close-presets')) { closePresets(); return; }
+      if (e.target.closest('.le-save-current')) { openPresets(); $('.le-name').focus(); return; }
       const preset = e.target.closest('[data-preset]');
-      if (preset) { const p = [...presets,...custom].find(x => String(x.id) === preset.dataset.preset); if (!p) return; config = normalize(p.layout_config); select.value = p.layout || 'blur'; if (typeof p.subtitles === 'boolean') { preferredSubtitles = p.subtitles; restoreSubtitles(); } if (config.mode !== 'standard' && !config.face) { region = 'face'; $('.le-areas').open = true; status('Selecione ou ajuste a área do rosto antes de gerar a prévia.'); } else status(''); paint(); notify(); return; }
+      if (preset) { const p = [...presets,...custom].find(x => String(x.id) === preset.dataset.preset); if (!p) return; closePresets(); config = normalize(p.layout_config); select.value = p.layout || 'blur'; if (typeof p.subtitles === 'boolean') { preferredSubtitles = p.subtitles; restoreSubtitles(); } if (config.mode !== 'standard' && !config.face) { region = 'face'; setPanel('regions'); $('.le-areas').open = true; status('Selecione ou ajuste a área do rosto antes de gerar a prévia.'); } else { setPanel('composition'); status('Modelo aplicado. Ajuste o resultado na etapa Composição.'); } paint(); notify(); return; }
       const del = e.target.closest('[data-delete]');
       if (del) { try { await json(`/api/layout-presets/${encodeURIComponent(del.dataset.delete)}`, {method:'DELETE'}); if (!currentAction()) return; custom = custom.filter(p => String(p.id) !== del.dataset.delete); paint(); } catch (error) { if (currentAction()) status(error.message); } return; }
       const which = e.target.closest('[data-region]'); if (which) { region = which.dataset.region; paint(); return; }

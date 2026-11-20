@@ -124,3 +124,13 @@ test('draw, move and resize source region with pointer',async t=>{
  ptr(f.$('.le-resize'),'pointerdown',130,70);ptr(stage,'pointermove',150,80);ptr(stage,'pointerup',150,80);
  const resized=f.editor.getConfig().face;assert.ok(Math.abs(resized.w-.5)<1e-9);assert.ok(Math.abs(resized.h-.5)<1e-9);
 });
+
+test('0.8.0: supplied black coral white palette is the active studio theme',()=>{
+ const appCss=fs.readFileSync(path.join(repo,'static/app.css'),'utf8');
+ const timelineCss=fs.readFileSync(path.join(repo,'static/timeline.css'),'utf8');
+ const layoutCss=fs.readFileSync(path.join(repo,'static/layout-editor.css'),'utf8');
+ assert.match(appCss,/--bg:\s*#080808/i);
+ assert.match(appCss,/--accent:\s*#FF422A/i);
+ assert.match(timelineCss,/--cyan:\s*#FF422A/i);
+ assert.match(layoutCss,/#FF422A/i);
+});

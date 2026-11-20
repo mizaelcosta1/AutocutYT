@@ -1,4 +1,10 @@
-# AutoClips AI Studio 0.7.7 — downloads e armazenamento automático
+# AutoClips AI Studio 0.8.0 — início do editor visual intuitivo
+
+## Editor visual organizado
+
+Esta versão inicia a evolução do editor conforme `qa/QA_v0.8.0.md`: paleta preto/coral/branco, navegação contextual em Modelos, Composição e Rosto e jogo, e galeria de modelos em modal. A seleção de rosto/jogo continua editando regiões da gravação original; os quadros de saída independentes, camadas e edição de títulos/legendas no canvas entram nas próximas fases.
+
+## Downloads e envios dos cortes
 
 ## Downloads e envios dos cortes
 

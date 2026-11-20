@@ -47,7 +47,7 @@ from layout_presets import builtin_presets
 from storage_delivery import StorageDelivery, DeliveryError
 from storage_routes import build_storage_router
 
-APP_VERSION = "0.7.7"
+APP_VERSION = "0.8.0"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
