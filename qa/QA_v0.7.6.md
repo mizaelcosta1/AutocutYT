@@ -43,3 +43,9 @@ A prévia real de seis segundos foi reproduzida completamente em 720×1280, H.26
 A primeira exportação final em 1080p foi interrompida com SIGKILL do FFmpeg. As métricas mostraram pico próximo do limite de 1 GB; essa observação é compatível com pressão de memória, sem identificar a causa pelo log do kernel. Os pools automáticos do codec foram substituídos por limites explícitos: vídeo 2 threads, áudio 1, filtros 1. As opções cobrem entrada, saída, ffprobe e validação completa, mantendo dimensões, FPS, CRF e preset. A mensagem de interrupção orienta nova tentativa sem afirmar que foi necessariamente falta de memória.
 
 No ensaio local de seis segundos com fonte sintética 1920×1080 a 60 fps e a mesma composição, o pico de RSS por FFmpeg caiu de 639.900 KiB para 335.632 KiB (47,55%). O arquivo permaneceu em 1080×1920, 60 fps, H.264/AAC. A medição local não representa o consumo agregado do Railway; a repetição em produção é registrada no checkpoint entregue após publicar esta correção.
+
+### Repetição real após corrigir o consumo
+
+O commit `35541bc` foi implantado com sucesso. A mesma prévia aprovada foi usada na nova tentativa, e o clipe terminou em `final_ready`. O MP4 foi baixado pelo link do aplicativo: 6,000 segundos, 1080×1920, 60 fps, 360 quadros, H.264/AAC, 1.949.506 bytes. A decodificação completa retornou zero sem erros. A composição mostra rosto acima, legenda ciano ao centro e jogo preenchendo a região inferior.
+
+A revisão final identificou o link de download em azul padrão sobre fundo escuro. Ele recebeu aparência de botão ciano, altura mínima de 44 px e foco visível. O endereço e o mecanismo de download permaneceram iguais; essa mudança visual não altera o renderer validado.

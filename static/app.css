@@ -496,6 +496,20 @@ button.full { width: 100%; }
   width: 100%; border-radius: 12px; background: #060e17;
   border: 1px solid var(--border); max-height: 390px; object-fit: contain;
 }
+.clip-media a.outline, .clip-media a.outline:visited {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: rgba(66, 213, 231, 0.1);
+  color: var(--accent-2);
+  font-weight: 700;
+  text-decoration: none;
+}
+.clip-media a.outline:hover { background: rgba(66, 213, 231, 0.18); }
+.clip-media a.outline:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 3px; }
 .yt-publish-box {
   margin-top: 10px;
   padding: 12px;
