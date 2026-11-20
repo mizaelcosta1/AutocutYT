@@ -134,3 +134,11 @@ test('0.8.0: supplied black coral white palette is the active studio theme',()=>
  assert.match(timelineCss,/--cyan:\s*#FF422A/i);
  assert.match(layoutCss,/#FF422A/i);
 });
+
+for(const page of ['index.html','timeline.html']) test(`${page}: legacy framing selector is hidden for composed presets`,async t=>{
+ const f=fixture(page);t.after(f.close);await f.editor.load();
+ assert.equal(f.$(page==='index.html'?'#layout':'#export-layout').hidden,false);
+ f.$('.le-open-presets').click();
+ f.$('[data-preset="talk"]').click();
+ assert.equal(f.$(page==='index.html'?'#layout':'#export-layout').hidden,true);
+});

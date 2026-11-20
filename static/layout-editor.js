@@ -125,6 +125,7 @@
       root.querySelectorAll('.le-pip').forEach(el => el.hidden = config.mode !== 'pip');
       root.querySelectorAll('.le-caption-position').forEach(el => el.hidden = ['split','split_caption'].includes(config.mode));
       root.querySelectorAll('.le-composite').forEach(el => el.hidden = config.mode === 'standard');
+      select.hidden = config.mode !== 'standard'; if (selectLabel) selectLabel.hidden = select.hidden;
       root.querySelectorAll('[data-region]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.region === region)));
       const box = config[region]; const graphic = $('.le-box'); graphic.hidden = !box;
       if (box) { Object.assign(graphic.style, {left:`${box.x*100}%`,top:`${box.y*100}%`,width:`${box.w*100}%`,height:`${box.h*100}%`}); }
