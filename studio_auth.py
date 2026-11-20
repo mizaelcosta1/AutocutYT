@@ -1,8 +1,8 @@
 """Google OpenID Connect login for the AutoClips web studio.
 
-This is not YouTube upload authorization: its requested scopes are only
-openid/email/profile. OAuth application credentials live in Railway Variables,
-never in browser forms or committed configuration files.
+Normal sign-in requests only openid/email/profile. A separate, explicit Drive
+connection uses the same registered callback, with a session-bound purpose.
+OAuth application credentials stay in server variables and the encrypted vault.
 """
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ OAUTH_MAX_AGE = 10 * 60
 GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth'
 GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token'
 GOOGLE_JWKS = 'https://www.googleapis.com/oauth2/v3/certs'
+DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
+DRIVE_CONNECT_HANDLER = None
 router = APIRouter()
 
 
@@ -70,6 +72,11 @@ def read_session(request):
     return None
 
 
+def storage_owner(email):
+    """Stable private namespace; never use email addresses in file names."""
+    return hashlib.sha256(str(email).strip().casefold().encode()).hexdigest()
+
+
 def exchange_code(code, verifier):
     cfg = settings()
     with httpx.Client(timeout=15, follow_redirects=False) as client:
@@ -90,7 +97,7 @@ def verify_identity(raw, client_id):
 
 
 def login_html(configured_ok):
-    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.5</div><h1>AutoClips AI Studio</h1><p>Da live ao clipe: escolha o rosto, combine as telas e revise suas legendas antes de exportar.</p>'''
+    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.7</div><h1>AutoClips AI Studio</h1><p>Da live ao clipe: escolha o rosto, combine as telas e revise suas legendas antes de exportar.</p>'''
     if configured_ok:
         content += '<a class="button" href="/login/google">Entrar com Google</a>'
     else:
@@ -115,18 +122,37 @@ def login(request: Request):
 def login_google(request: Request):
     if not configured():
         return RedirectResponse('/login', status_code=303)
+    return _start_google()
+
+
+@router.get('/auth/storage/drive/start')
+def connect_google_drive(request: Request):
+    session = read_session(request)
+    if not session or not DRIVE_CONNECT_HANDLER:
+        raise HTTPException(401, 'Entre com Google antes de conectar o Drive.')
+    return _start_google(purpose='drive', email=session['email'])
+
+
+def _start_google(*, purpose='login', email=None):
     cfg = settings()
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
-    payload = serializer('google-oauth').dumps({'state': state, 'nonce': nonce, 'verifier': verifier})
-    query = urlencode({
+    pending = {'state': state, 'nonce': nonce, 'verifier': verifier, 'purpose': purpose}
+    if purpose == 'drive':
+        pending['email'] = email
+    payload = serializer('google-oauth').dumps(pending)
+    parameters = {
         'client_id': cfg['client_id'], 'redirect_uri': cfg['public_url'] + '/login/google/callback',
         'response_type': 'code', 'scope': 'openid email profile', 'state': state,
         'nonce': nonce, 'code_challenge': challenge, 'code_challenge_method': 'S256',
         'access_type': 'online', 'prompt': 'select_account',
-    })
+    }
+    if purpose == 'drive':
+        parameters.update(scope='openid email profile ' + DRIVE_SCOPE,
+                          access_type='offline', prompt='consent', login_hint=email)
+    query = urlencode(parameters)
     response = RedirectResponse(GOOGLE_AUTH + '?' + query, status_code=302)
     response.set_cookie(OAUTH_COOKIE, payload, max_age=OAUTH_MAX_AGE, httponly=True, secure=True, samesite='lax', path='/login/google')
     return response
@@ -135,9 +161,14 @@ def login_google(request: Request):
 @router.get('/login/google/callback')
 def login_google_callback(request: Request, code: str = '', state: str = '', error: str = ''):
     pending = read_oauth_cookie(request.cookies.get(OAUTH_COOKIE))
+    if (not pending or not state or len(state) > 256 or not state.isascii()
+            or not secrets.compare_digest(pending.get('state', ''), state)):
+        raise HTTPException(400, 'Estado OAuth inválido ou expirado')
     if error:
+        if pending.get('purpose') == 'drive':
+            return _storage_redirect(False)
         raise HTTPException(400, 'A autorização Google foi cancelada')
-    if not pending or not code or not state or not secrets.compare_digest(pending['state'], state):
+    if not code:
         raise HTTPException(400, 'Estado OAuth inválido ou expirado')
     try:
         token = exchange_code(code, pending['verifier'])
@@ -151,10 +182,31 @@ def login_google_callback(request: Request, code: str = '', state: str = '', err
     email = str(identity.get('email', '')).strip().casefold()
     if email not in settings()['allowed']:
         raise HTTPException(403, 'Esta conta Google não tem acesso ao AutoClips')
+    if pending.get('purpose') == 'drive':
+        session = read_session(request)
+        if (not session or session['email'] != pending.get('email') or email != pending.get('email')):
+            raise HTTPException(403, 'Conecte o Drive da mesma conta usada para entrar no estúdio.')
+        if DRIVE_SCOPE not in str(token.get('scope', '')).split() or not DRIVE_CONNECT_HANDLER:
+            return _storage_redirect(False)
+        try:
+            DRIVE_CONNECT_HANDLER(storage_owner(email), token, identity)
+        except (ValueError, httpx.HTTPError):
+            # Provider messages can contain credentials. The connection panel
+            # explains setup/reconnect without reflecting tokens into a URL.
+            return _storage_redirect(False)
+        return _storage_redirect(True)
     response = RedirectResponse('/', status_code=303)
     response.set_cookie(SESSION_COOKIE, serializer('studio-session').dumps({'email': email}), max_age=COOKIE_MAX_AGE,
                         httponly=True, secure=True, samesite='lax', path='/')
     response.delete_cookie(OAUTH_COOKIE, path='/login/google', secure=True, httponly=True, samesite='lax')
+    return response
+
+
+def _storage_redirect(connected):
+    response = RedirectResponse('/?storage=' + ('connected' if connected else 'error') + '#connections', status_code=303)
+    response.delete_cookie(OAUTH_COOKIE, path='/login/google', secure=True, httponly=True, samesite='lax')
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Referrer-Policy'] = 'no-referrer'
     return response
 
 

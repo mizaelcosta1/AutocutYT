@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#08121d">
-  <title>AutoClips AI Studio v0.7.6</title>
+  <title>AutoClips AI Studio v0.7.7</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/layout-editor.css">
+  <link rel="stylesheet" href="/static/delivery.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
@@ -20,12 +21,12 @@
     <button class="nav" data-tab="connections"><span aria-hidden="true">◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="storage-dot" aria-hidden="true"></div><div><b>Armazenamento</b><p id="storage-info">Consultando espaço disponível...</p></div></div>
-    <div class="sidebar-foot">AutoClips Studio · v0.7.6<br><a href="/logout">Sair da conta</a></div>
+    <div class="sidebar-foot">AutoClips Studio · v0.7.7<br><a href="/logout">Sair da conta</a></div>
   </aside>
   <div class="main-wrap">
     <header class="topbar">
       <div class="mobile-brand"><span aria-hidden="true">▶</span> <b>AutoClips AI</b></div>
-      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.6</span>
+      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.7</span>
       <div class="platforms" aria-label="Plataformas compatíveis"><span class="pill"><i class="dot tw" aria-hidden="true"></i>Twitch</span><span class="pill"><i class="dot yt" aria-hidden="true"></i>YouTube</span><span class="pill"><i class="dot kick" aria-hidden="true"></i>Kick</span></div>
     </header>
     <main id="main-content" tabindex="-1">
@@ -126,6 +127,7 @@
             </aside>
           </div>
           <div class="section-heading moments-title"><div><span class="overline">REVISE E EXPORTE</span><h2>Seus clipes <span id="clips-number">0</span></h2></div><button class="outline" id="refresh-clips">Atualizar</button></div>
+          <section class="delivery-project" data-delivery-project aria-label="Downloads e envios deste projeto"></section>
           <div id="clips-list" class="clips-list"><div class="empty-state mini"><p>Crie um clipe manual ou encontre momentos com o assistente.</p></div></div>
         </div>
       </section>
@@ -135,6 +137,8 @@
         <div class="section-heading connection-heading"><div><span class="overline">CAPTURA E PUBLICAÇÃO</span><h2>Suas contas</h2></div><button id="reload-social" class="outline" type="button">Atualizar</button></div>
         <div id="social-grid" class="source-grid social-grid"><article class="panel"><p>Consultando as plataformas...</p></article></div>
         <details class="connection-help"><summary>Como conectar uma conta?</summary><p>Use o login oficial da plataforma. Se uma conexão estiver indisponível, o administrador precisa configurar o aplicativo no servidor. Você não precisa informar Client ID ou Secret nesta tela.</p><p>A publicação de cada clipe exige sua aprovação.</p></details>
+
+        <section class="storage-connections" data-storage-connections aria-label="Downloads e armazenamento"></section>
 
         <div class="section-heading connection-heading" id="ai-connections-heading"><div><span class="overline">MOMENTOS, TÍTULOS E DESCRIÇÕES</span><h2>Seus modelos de IA</h2><p>Escolha modelos gratuitos ou conecte outro provedor.</p></div><span class="free-badge">FREE LLM</span></div>
         <div class="free-model-info"><b>Seleção automática de modelos gratuitos</b><p>O OpenRouter Free escolhe um modelo gratuito disponível para cada pedido. As cotas da sua conta continuam valendo.</p></div>
@@ -184,6 +188,7 @@
 <script src="/static/live-preview.js"></script>
 <script src="/static/video-activity.js"></script>
 <script src="/static/layout-editor.js"></script>
+<script src="/static/delivery.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/connections.js"></script>
 </body>

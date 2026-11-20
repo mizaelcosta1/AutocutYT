@@ -15,6 +15,8 @@
   const viewingJob = job => state.currentVideo?.id === job.id;
   let layoutEditor = null;
   let editorGeneration = 0;
+  const observedLiveTasks = new Set();
+  const observedLiveCaptures = new Set();
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -80,6 +82,7 @@
     if (tab === "library") loadLibrary();
     if (tab === "editor") loadConfig();
     if (tab === "connections" && window.reloadConnections) window.reloadConnections();
+    if (tab === "connections") void window.StorageDeliveryUI?.refresh();
   }
 
   $$("[data-tab]").forEach((btn) => {
@@ -90,7 +93,10 @@
     while (true) {
       await new Promise((r) => setTimeout(r, 1500));
       const t = await api(`/api/tasks/${taskId}`);
-      if (t.status === "done") return t.result;
+      if (t.status === "done") {
+        void window.StorageDeliveryUI?.onRendered(t.result);
+        return t.result;
+      }
       if (t.status === "error" || t.status === "interrupted") {
         throw new Error(t.error || "Tarefa interrompida");
       }
@@ -263,6 +269,27 @@
         return;
       }
       if (window.AutoClipsLive) window.AutoClipsLive.refresh(data.lives);
+      // Observe live preparation transitions, never treat old completed files
+      // returned by the initial page load as new downloads.
+      for (const live of data.lives) {
+        if (["starting", "recording", "stopping", "saving", "processing"].includes(live.status))
+          observedLiveCaptures.add(live.id);
+        const taskId = live.analysis_task_id;
+        if (!taskId) continue;
+        if (["queued", "running"].includes(live.analysis_status)) observedLiveTasks.add(taskId);
+        else if ((observedLiveTasks.has(taskId) || observedLiveCaptures.has(live.id)) &&
+            ["done", "error", "interrupted"].includes(live.analysis_status)) {
+          if (live.analysis_status === "done" && window.StorageDeliveryUI) {
+            try {
+              const completed = await api("/api/tasks/" + encodeURIComponent(taskId));
+              if (completed.status !== "done") continue;
+              void window.StorageDeliveryUI.onRendered(completed.result);
+            } catch (_) { continue; }
+          }
+          observedLiveTasks.delete(taskId);
+          observedLiveCaptures.delete(live.id);
+        }
+      }
       const currentLive = data.lives.find((live) => live.video_id === state.currentVideo?.id && live.analysis_task_id);
       if (currentLive) {
         await loadTranscript();
@@ -581,6 +608,7 @@
       layoutEditor = null;
     }
     state.currentVideo = video;
+    window.StorageDeliveryUI?.setVideo(video.id);
     void activity.refresh(video.id);
     state.manifest = null;
     renderClipsList([]);
@@ -702,6 +730,26 @@
     }
   }
 
+  function clipArtifact(clip, quality) {
+    return {
+      video_id: state.currentVideo?.id, kind: "clip", clip_id: clip.id, quality,
+      render_id: clip[quality + "_options"]?.render_id,
+      url: clip[quality + "_url"],
+      filename: clip.id + "_" + quality + (quality === "preview" ? "_720p.mp4" : "_1080p.mp4")
+    };
+  }
+  function clipDownloadActions(clip) {
+    return '<div class="delivery-file-actions">' + ["preview", "final"].map(quality => {
+      const value = clipArtifact(clip, quality);
+      if (!value.url) return "";
+      const href = window.StorageDeliveryUI ? window.StorageDeliveryUI.downloadUrl(value) :
+        value.url + (value.url.includes("?") ? "&" : "?") + "download=1";
+      if (!href) return "";
+      return '<div class="delivery-output"><a class="delivery-download" href="' + escapeHtml(href) +
+        '" download="' + escapeHtml(value.filename) + '">Baixar ' + (quality === "preview" ? "prévia 720p" : "final 1080p") +
+        '</a><span data-clip-send="' + quality + '"></span></div>';
+    }).join("") + "</div>";
+  }
   function renderClipsList(clips) {
     $("#clips-number").textContent = clips.length;
     const list = $("#clips-list");
@@ -769,17 +817,20 @@
             }
           </div>
           <div class="clip-media">
-            ${
-              c.final_url
-                ? `<video controls playsinline src="${c.final_url}"></video><a class="outline" style="text-align:center;text-decoration:none;padding:8px" href="${c.final_url}" download="${c.id}_final_1080p.mp4">Baixar Final 1080p</a>`
-                : c.preview_url
-                ? `<video controls playsinline src="${c.preview_url}"></video><span class="hint" style="text-align:center">Previa 720p pronta</span>`
-                : `<div class="empty-state mini"><p class="small">Gere a prévia 720p para revisar o corte no layout escolhido.</p></div>`
-            }
+            ${c.final_url || c.preview_url
+              ? `<video controls playsinline src="${escapeHtml(c.final_url || c.preview_url)}"></video>${clipDownloadActions(c)}`
+              : `<div class="empty-state mini"><p class="small">Gere a prévia 720p para revisar o corte no layout escolhido.</p></div>`}
           </div>
         </article>`
       )
       .join("");
+    for (const clip of clips) {
+      const card = Array.from(list.querySelectorAll(".clip-card")).find(node => node.dataset.clipId === clip.id);
+      for (const quality of ["preview", "final"]) {
+        const container = card?.querySelector('[data-clip-send="' + quality + '"]');
+        if (container) window.StorageDeliveryUI?.mountSend(container, clipArtifact(clip, quality));
+      }
+    }
     updateClipApprovals();
   }
 
@@ -880,7 +931,8 @@
           approved_preview_id: quality === "final" ? approvedPreviewId : null,
         }),
       });
-      await activity.track(job, started.task_id);
+      const rendered = await activity.track(job, started.task_id);
+      void window.StorageDeliveryUI?.onRendered(rendered);
       if (!viewingJob(job)) return;
       showNotice(`${quality === "preview" ? "Previa 720p" : "Video final 1080p"} pronto!`, "ok");
       await loadManifest();
@@ -956,8 +1008,13 @@
   loadLives();
   setInterval(loadLives, 8000);
 
-  if (location.hash === "#connections" || new URLSearchParams(location.search).get("connected")) {
+  if (location.hash === "#connections" || new URLSearchParams(location.search).get("connected") || new URLSearchParams(location.search).get("storage")) {
     switchTab("connections");
+    const storage = new URLSearchParams(location.search).get("storage");
+    if (storage) {
+      showNotice(storage === "connected" ? "Google Drive conectado. Configure a automação quando quiser ativá-la." : "Não foi possível conectar o Drive. Tente conectar novamente em Armazenamento.", storage === "connected" ? "ok" : "error");
+      history.replaceState(null, "", "/#connections");
+    }
     const connected = new URLSearchParams(location.search).get("connected");
     if (connected) {
       showNotice(`Conta ${connected.toUpperCase()} conectada com sucesso!`, "ok");

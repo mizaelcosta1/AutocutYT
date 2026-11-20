@@ -1,4 +1,36 @@
-# AutoClips AI Studio 0.7.6 — edição, progresso e exportação revisados
+# AutoClips AI Studio 0.7.7 — downloads e armazenamento automático
+
+## Downloads e envios dos cortes
+
+O editor de cortes e a montagem oferecem **Baixar prévia 720p** e **Baixar final 1080p** quando esses arquivos estão prontos. O endereço identifica a renderização exata; um arquivo substituído pede atualização do editor, sem baixar outra versão silenciosamente. Os players continuam abrindo o vídeo dentro do estúdio.
+
+Em **Conexões → Downloads e armazenamento**, escolha as ações para os próximos arquivos gerados:
+
+- **Baixar automaticamente neste dispositivo:** precisa da aba aberta. O navegador pode pedir permissão para vários downloads; o link manual permanece disponível. Recarregar a biblioteca não baixa todo o histórico.
+- **Enviar automaticamente ao destino conectado:** o servidor mantém uma fila persistente e envia mesmo se você fechar a página. Escolha Google Drive ou GitHub e prévia, final ou ambos. O final continua exigindo a revisão e aprovação da prévia.
+- **Enviar manualmente:** cada arquivo pronto tem uma ação para enviá-lo ao destino selecionado. O histórico do projeto mostra fila, progresso, falha, conclusão e link remoto. **Tentar novamente** repete um envio falho; **Cancelar envio** remove a reserva local de um envio que não está em execução, preservando o original e eventuais arquivos remotos.
+
+### Conectar Google Drive
+
+Clique em **Conectar Google Drive** e autorize a mesma conta usada para entrar no estúdio. A autorização de login não concede acesso ao Drive. A conexão solicita `drive.file` com acesso offline e cria/reutiliza a pasta **AutoClips**. Não permite consultar indiscriminadamente todo o Drive nem escolher uma pasta arbitrária por ID.
+
+O servidor reutiliza as variáveis OAuth já existentes e o retorno registrado `/login/google/callback`. O projeto Google Cloud precisa ter a **Google Drive API** habilitada e permitir o escopo na configuração OAuth. Se a aplicação Google estiver no modo externo **Testing**, o token de atualização pode expirar em sete dias; reconecte a conta quando solicitado. Tokens ficam no cofre criptografado, sem aparecer no navegador ou no Git.
+
+### Conectar GitHub
+
+Informe um **repositório privado** no formato `proprietário/repositório` e um token de acesso restrito a ele, com **Contents: leitura e escrita**. O repositório precisa ter ao menos um commit. A conexão valida a conta e o destino, cria/reutiliza uma **Release em rascunho** e guarda os MP4s como anexos; não adiciona vídeos ao histórico Git. Cada arquivo deve ter menos de 2 GiB e uma Release admite até 1.000 anexos.
+
+A autorização do conector GitHub no ChatGPT não é uma credencial do aplicativo implantado. A interface só exibe **Conectado** após validar uma credencial fornecida ao estúdio. Não há envio a repositório público nem publicação automática de Release.
+
+### Persistência e limites
+
+A automação começa desativada. Cada envio prende a versão exata do arquivo por hard link no mesmo volume, calcula SHA-256 e vincula conta, destino e ID de renderização. A fila e os dados de retomada ficam criptografados em `storage_outbox/jobs.enc`; credenciais usam o cofre existente. O worker serial só inicia no ciclo de vida da aplicação. Drive usa upload retomável; GitHub confere nome, tamanho e SHA-256 antes de repetir um envio de resultado incerto. Há até três tentativas automáticas com espera; depois, o histórico oferece nova tentativa manual.
+
+O volume continua finito. Uma exportação reservada ocupa espaço enquanto seu envio não conclui ou é cancelado, mesmo se outro render substituir seu arquivo no editor. O sucesso do envio não apaga o original nem a cópia atual da biblioteca. Fechar o navegador interrompe a possibilidade de baixar para o dispositivo, mas não a fila de upload do servidor. As cotas e permissões das contas externas continuam valendo.
+
+Nenhuma dependência nova de produção foi adicionada; o recurso usa `httpx`, `cryptography`, FastAPI e as bibliotecas padrão já instaladas. Detalhes de validação: [qa/QA_v0.7.7.md](qa/QA_v0.7.7.md).
+
+Referências oficiais: [escopos do Drive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth), [OAuth para aplicações web](https://developers.google.com/identity/protocols/oauth2/web-server), [expiração de tokens](https://developers.google.com/identity/protocols/oauth2), [uploads do Drive](https://developers.google.com/workspace/drive/api/guides/manage-uploads), [assets de Releases](https://docs.github.com/en/rest/releases/assets), [limites de Releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).
 
 ## Correções da versão 0.7.6
 

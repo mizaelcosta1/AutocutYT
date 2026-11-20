@@ -217,6 +217,23 @@
   function renderedUrl(quality, meta) {
     return `/api/videos/${videoId}/timeline/rendered/${quality}${meta.render_id ? `?render_id=${encodeURIComponent(meta.render_id)}` : ""}`;
   }
+  function exportArtifact(quality, meta) {
+    return {video_id:videoId, kind:"timeline", quality, render_id:meta?.render_id,
+      url:meta ? renderedUrl(quality, meta) : null,
+      filename:"autoclips-montagem_" + quality + (quality === "preview" ? "_720p.mp4" : "_1080p.mp4")};
+  }
+  function downloadUrl(quality, meta) {
+    if (window.StorageDeliveryUI) return window.StorageDeliveryUI.downloadUrl(exportArtifact(quality, meta));
+    const url = renderedUrl(quality, meta);
+    return url.includes("?") ? url.replace("?", "?download=1&") : url + "?download=1";
+  }
+  function showSend(quality, meta, available) {
+    const container = $("#" + quality + "-send");
+    if (!container) return;
+    container.hidden = !available;
+    if (available) window.StorageDeliveryUI?.mountSend(container, exportArtifact(quality, meta));
+    else container.replaceChildren();
+  }
   function updateApproval() {
     const options = currentOptions();
     const preview = state.exports.preview;
@@ -242,7 +259,10 @@
     $("#preview-video").classList.toggle("hidden", !matching);
     if (matching) {
       const url = renderedUrl("preview", preview);
-      $("#preview-link").href = url;
+      const download = downloadUrl("preview", preview);
+      $("#preview-link").classList.toggle("hidden", !download);
+      if (download) $("#preview-link").href = download;
+      else $("#preview-link").removeAttribute("href");
       if ($("#preview-video").getAttribute("src") !== url) {
         $("#preview-video").src = url;
         $("#preview-video").load();
@@ -258,8 +278,15 @@
     if (state.rendering !== "final") $("#final-status").textContent = freshFinal
       ? `Vídeo final de ${fmtTime(final.probe?.duration)} disponível em ${final.probe?.width || (final.layout_config?.aspect === "16:9" ? 1920 : 1080)} × ${final.probe?.height || (final.layout_config?.aspect === "16:9" ? 1080 : 1920)}.`
       : matching ? "Prévia pronta; revise o vídeo acima e confirme a aprovação." : "Gere uma prévia nesta configuração para liberar o final.";
-    if (freshFinal) $("#final-link").href = renderedUrl("final", final);
+    if (freshFinal) {
+      const download = downloadUrl("final", final);
+      $("#final-link").classList.toggle("hidden", !download);
+      if (download) $("#final-link").href = download;
+      else $("#final-link").removeAttribute("href");
+    }
     else $("#final-link").removeAttribute("href");
+    showSend("preview", preview, matching);
+    showSend("final", final, freshFinal);
   }
   function currentOptions() {
     return {layout:$("#export-layout").value, subtitles:$("#export-subtitles").checked, subtitle_style:readStyle(),
@@ -288,7 +315,8 @@
         approved_preview:$("#approve-preview").checked,
         approved_preview_id:quality === "final" ? state.exports.preview?.render_id || null : null,
       })});
-      await activity.track(job, result.task_id, (message) => { status.textContent = message; });
+      const rendered = await activity.track(job, result.task_id, (message) => { status.textContent = message; });
+      void window.StorageDeliveryUI?.onRendered(rendered);
       await loadExports();
       notice(`${quality === "preview" ? "Prévia" : "Exportação final"} gerada no servidor.`, "ok");
     } catch (error) { activity.failure(job,error); button.dataset.lastError = error.message; notice(error.message, "error"); }
@@ -493,6 +521,7 @@
   });
   async function init() {
     if (!videoId) return notice("Identificador de vídeo inválido.", "error");
+    window.StorageDeliveryUI?.setVideo(videoId);
     void activity.refresh(videoId);
     video.src = `/api/videos/${videoId}/stream`;
     try {

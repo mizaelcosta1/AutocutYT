@@ -1,7 +1,7 @@
-"""AutoClips Studio API v0.7.1: local-first, cloud-deployable and mobile-friendly.
+"""AutoClips Studio API: video editing, exports and private delivery.
 
 Start: uvicorn server:app --host 127.0.0.1 --port 8765
-For cloud / LAN deployment, set AUTOCLIPS_PASSWORD and bind to 0.0.0.0.
+Cloud access requires the Google sign-in variables documented in README.md.
 """
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ import time
 from typing import Literal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -42,8 +44,10 @@ from transcription import default_model_name
 from live_preview import start_capture, preview_directory, preview_status, resolve_preview_asset, cleanup_preview
 from composition import LayoutConfig, normalize_layout_config, require_face
 from layout_presets import builtin_presets
+from storage_delivery import StorageDelivery, DeliveryError
+from storage_routes import build_storage_router
 
-APP_VERSION = "0.7.6"
+APP_VERSION = "0.7.7"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -62,10 +66,23 @@ PENDING_PUBLISH: dict[tuple[str, str], str] = {}
 PROCESSING_VIDEOS: dict[str, str] = {}
 RENDERING: set[tuple[str, str]] = set()
 TASK_CONTEXT = threading.local()
+REQUEST_OWNER = ContextVar('storage_delivery_owner', default=None)
 PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 
-app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(_app):
+    STORAGE_DELIVERY.start()
+    try:
+        yield
+    finally:
+        STORAGE_DELIVERY.stop()
+
+
+app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None, lifespan=lifespan)
 CONNECTION_VAULT = Vault(ROOT)
+STORAGE_DELIVERY = StorageDelivery(ROOT, CONNECTION_VAULT)
+studio_auth.DRIVE_CONNECT_HANDLER = lambda owner, token, identity: STORAGE_DELIVERY.connect_drive(owner, token, identity)
 FREE_MODELS_UPGRADE = migrate_free_defaults(CONNECTION_VAULT)
 FREE_CATALOG_REFRESH = refresh_saved_free_catalog(CONNECTION_VAULT)
 if FREE_MODELS_UPGRADE.get("migrated"):
@@ -132,6 +149,13 @@ cleanup_stale_uploads()
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
+    async def authorized(owner):
+        marker = REQUEST_OWNER.set(owner)
+        try:
+            return await call_next(request)
+        finally:
+            REQUEST_OWNER.reset(marker)
+
     address = request.client.host if request.client else ""
     is_loopback = address in {"127.0.0.1", "::1", "testclient", "localhost"}
     if request.url.path == "/health" and request.method == "GET":
@@ -139,14 +163,15 @@ async def basic_auth(request: Request, call_next):
     if request.url.path in {"/login", "/login/google", "/login/google/callback"}:
         return await call_next(request)
     if studio_auth.configured():
-        if not studio_auth.read_session(request):
+        session = studio_auth.read_session(request)
+        if not session:
             if request.method == "GET" and ("text/html" in request.headers.get("accept", "") or request.url.path == "/"):
                 return RedirectResponse('/login', status_code=303)
             return JSONResponse({"detail": "Faça login com Google"}, status_code=401)
-        return await call_next(request)
+        return await authorized(studio_auth.storage_owner(session['email']))
     # Permit unconfigured development only on the local machine.
     if is_loopback:
-        return await call_next(request)
+        return await authorized('local')
     if request.url.path == "/logout":
         return RedirectResponse('/login', status_code=303)
     if request.method == "GET" and ("text/html" in request.headers.get("accept", "") or request.url.path == "/"):
@@ -207,6 +232,7 @@ def _bind_video_task(task_id: str, video_id: str) -> None:
 
 def schedule(kind: str, fn, *, video_id: str | None = None,
              publish_key: tuple[str, str] | None = None) -> str:
+    delivery_owner = REQUEST_OWNER.get() or getattr(TASK_CONTEXT, 'delivery_owner', None)
     task_id = uuid.uuid4().hex
     task = {"id": task_id, "kind": kind, "status": "queued", "created_at": utcnow()}
 
@@ -219,6 +245,7 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
 
     def do_work():
         TASK_CONTEXT.task_id = task_id
+        TASK_CONTEXT.delivery_owner = delivery_owner
         TASK_CONTEXT.last_save = 0
         outcome = {"status": "interrupted", "error": "Processamento interrompido."}
         try:
@@ -239,6 +266,7 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
             outcome = {"status": "error", "error": str(error)[:500]}
         finally:
             TASK_CONTEXT.task_id = None
+            TASK_CONTEXT.delivery_owner = None
             with LOCK:
                 task.update(outcome, ended_at=utcnow())
                 release()
@@ -359,7 +387,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js", "delivery.js", "delivery.css"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
@@ -729,7 +757,7 @@ def _transcribe_for_video(video_id: str, *, force: bool = False) -> dict:
 
 def _prepare_recorded_video(video_id: str, *, analyze_after: bool, transcribe_after: bool,
                             auto_preview: bool) -> dict:
-    outcome = {"video_id": video_id, "previews": 0, "proposals": 0}
+    outcome = {"video_id": video_id, "previews": 0, "proposals": 0, "artifacts": []}
     if transcribe_after:
         try:
             transcript = _transcribe_for_video(video_id)
@@ -755,7 +783,8 @@ def _prepare_recorded_video(video_id: str, *, analyze_after: bool, transcribe_af
                 task_progress({"phase": "rendering", "progress": i * 100 / min(3, len(clips)),
                                "message": f"Preparando prévia {i + 1} de {min(3, len(clips))}."})
                 has_speech = any(word["start"] < clip["end"] and word["end"] > clip["start"] for word in words)
-                render_one(video_id, clip["id"], "preview", "blur", has_speech, _subtitle_style(video_id))
+                artifact = render_one(video_id, clip["id"], "preview", "blur", has_speech, _subtitle_style(video_id))
+                outcome['artifacts'].append(artifact)
                 outcome["previews"] += 1
     return outcome
 
@@ -763,7 +792,8 @@ def _prepare_recorded_video(video_id: str, *, analyze_after: bool, transcribe_af
 @app.get("/studio/{video_id}")
 def studio_timeline_page(video_id: str):
     _project_folder(video_id)
-    return FileResponse(Path(__file__).parent / "static" / "timeline.html", media_type="text/html")
+    return FileResponse(Path(__file__).parent / "static" / "timeline.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/videos/{video_id}/timeline")
@@ -895,12 +925,12 @@ def video_timeline_exports(video_id: str):
         for quality in ("preview", "final"):
             meta = _current_export(video_id, quality, version=doc["version"])
             if meta:
-                out[quality] = {"url": f"/api/videos/{video_id}/timeline/rendered/{quality}",
+                out[quality] = {"url": f"/api/videos/{video_id}/timeline/rendered/{quality}?render_id={_render_identity(meta)}",
                                 "version": meta["version"], "layout": meta["layout"],
                                 "subtitles": meta["subtitles"], "probe": meta["probe"],
                                 "layout_config": normalize_layout_config(meta.get("layout_config")),
                                 "subtitle_style": meta.get("subtitle_style", normalize_subtitle_style()),
-                                "render_id": meta.get("render_id", "")}
+                                "render_id": _render_identity(meta)}
         return {"exports": out}
 
 
@@ -962,17 +992,19 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
                         layout_config=composition, approved_preview_id=preview_id)
             records[quality] = meta
             write_json(exports_file, records)
+            result = _artifact_result(video_id, 'timeline', quality, render_id)
+            _deliver_render(result, dest)
             for previous in stale:
                 if previous and Path(previous.get("path", "")).is_file():
                     Path(previous["path"]).unlink(missing_ok=True)
-        return {"quality": quality, "url": f"/api/videos/{video_id}/timeline/rendered/{quality}"}
+        return result
 
     return {"task_id": _schedule_video("timeline-" + quality, video_id, work,
                                        preflight=lambda: _require_render_space(quality, duration, timeline=True))}
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
-def view_timeline_export(video_id: str, quality: str, render_id: str | None = None):
+def view_timeline_export(video_id: str, quality: str, render_id: str | None = None, download: bool = False):
     if quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
     with LOCK:
@@ -980,10 +1012,12 @@ def view_timeline_export(video_id: str, quality: str, render_id: str | None = No
         meta = _current_export(video_id, quality, version=doc["version"])
         if not meta:
             raise HTTPException(status_code=404, detail="Arquivo nao exportado para a versao atual")
-        if render_id and meta.get("render_id") != render_id:
+        if render_id and _render_identity(meta) != render_id:
             raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
-    return FileResponse(meta["path"], media_type="video/mp4", filename=f"autoclips-timeline-{quality}.mp4",
-                        content_disposition_type="inline")
+    return FileResponse(meta["path"], media_type="video/mp4",
+                        filename=_artifact_result(video_id, 'timeline', quality, _render_identity(meta))['filename'],
+                        content_disposition_type="attachment" if download else "inline",
+                        headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @app.post("/api/maintenance/cleanup")
@@ -1247,10 +1281,10 @@ def show_manifest(video_id: str):
             "ranking": manifest["ranking"], "duration": manifest["probe"]["duration"],
             "review_required": manifest.get("review_required", True),
             "clips": [{k: v for k, v in c.items() if k not in {"preview", "final"}} | {
-                "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview?v={c.get('preview', {}).get('render_id', '')}" if ready(c, "preview") else None,
-                "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final?v={c.get('final', {}).get('render_id', '')}" if ready(c, "final") else None,
-                "preview_options": {k: c.get("preview", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config", "render_id")},
-                "final_options": {k: c.get("final", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config", "render_id")},
+                "preview_url": f"/api/videos/{video_id}/rendered/{c['id']}/preview?v={_render_identity(c.get('preview'))}" if ready(c, "preview") else None,
+                "final_url": f"/api/videos/{video_id}/rendered/{c['id']}/final?v={_render_identity(c.get('final'))}" if ready(c, "final") else None,
+                "preview_options": {k: c.get("preview", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config")} | {"render_id": _render_identity(c.get('preview'))},
+                "final_options": {k: c.get("final", {}).get(k) for k in ("layout", "burn", "subtitle_style", "layout_config")} | {"render_id": _render_identity(c.get('final'))},
             } for c in manifest["clips"]]}
 
 
@@ -1500,14 +1534,15 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
                             "qa": {"full_decode_ok": True, **metadata}}
         current["status"] = "preview_ready" if quality == "preview" else "final_ready"
         write_json(work / "manifest.json", manifest)
+        result = _artifact_result(video_id, 'clip', quality, render_id, clip_id, clip.get('title'))
+        _deliver_render(result, dest)
         for record in stale:
             if isinstance(record, dict):
                 for key in ("path", "subtitles"):
                     candidate = Path(record[key]) if record.get(key) else None
                     if candidate and candidate.is_relative_to(work):
                         candidate.unlink(missing_ok=True)
-    return {"video_id": video_id, "clip_id": clip_id, "quality": quality,
-            "url": f"/api/videos/{video_id}/rendered/{clip_id}/{quality}"}
+    return result
 
 
 @app.post("/api/videos/{video_id}/render/{quality}")
@@ -1538,18 +1573,22 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")
-def view_rendered(video_id: str, clip_id: str, quality: str, v: str | None = None):
+def view_rendered(video_id: str, clip_id: str, quality: str, v: str | None = None, download: bool = False):
     manifest, _, _ = get_manifest(video_id)
     if not re.fullmatch(r"clip_[0-9a-z_]+", clip_id) or quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
     clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
     if not clip or quality not in clip:
         raise HTTPException(status_code=404)
-    if v and clip[quality].get("render_id") != v:
+    if v and _render_identity(clip[quality]) != v:
         raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
     if clip[quality].get("burn") and clip[quality].get("transcript_signature") != _transcript_signature(video_id):
         raise HTTPException(409, "A transcrição mudou. Gere uma nova prévia com as legendas atuais.")
-    return FileResponse(clip[quality]["path"], media_type="video/mp4", filename=f"{clip_id}_{quality}.mp4", content_disposition_type="inline")
+    return FileResponse(clip[quality]["path"], media_type="video/mp4",
+                        filename=_artifact_result(video_id, 'clip', quality, _render_identity(clip[quality]),
+                                                  clip_id, clip.get('title'))['filename'],
+                        content_disposition_type="attachment" if download else "inline",
+                        headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @app.get("/api/tasks/{task_id}")
@@ -1626,10 +1665,14 @@ def watch_live(live_id: str, proc, target: Path, logs):
         if code != 0 and not info.get("message"):
             info["message"] = "A captura foi interrompida; o trecho recebido foi salvo."
     if info.get("analyze_after") or info.get("transcribe_after"):
-        task_id = _schedule_video("prepare-after-live", vid,
-            lambda: _prepare_recorded_video(vid, analyze_after=info.get("analyze_after", False),
-                                           transcribe_after=info.get("transcribe_after", False),
-                                           auto_preview=info.get("auto_preview", False)))
+        TASK_CONTEXT.delivery_owner = info.get('_delivery_owner')
+        try:
+            task_id = _schedule_video("prepare-after-live", vid,
+                lambda: _prepare_recorded_video(vid, analyze_after=info.get("analyze_after", False),
+                                               transcribe_after=info.get("transcribe_after", False),
+                                               auto_preview=info.get("auto_preview", False)))
+        finally:
+            TASK_CONTEXT.delivery_owner = None
         with LOCK:
             info["analysis_task_id"] = task_id
 
@@ -1692,6 +1735,7 @@ def start_live(req: LiveStart):
             loghandle.close()
             raise HTTPException(502, "Falha ao iniciar o gravador Streamlink") from exc
         LIVE[live_id] = {"id": live_id, "platform": plat, "url": req.url,
+                         "_delivery_owner": REQUEST_OWNER.get(),
                          "status": "starting", "created_at": utcnow(), "process": proc,
                          "target": target, "logpath": logpath,
                          "analyze_after": req.analyze_after,
@@ -1789,3 +1833,80 @@ def live_preview_asset(live_id: str, asset: str):
         raise HTTPException(404, "Prévia ainda não disponível.")
     return FileResponse(path, media_type="application/vnd.apple.mpegurl" if asset.endswith(".m3u8") else "video/mp2t",
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+def _render_identity(meta):
+    if not isinstance(meta, dict):
+        return ''
+    if meta.get('render_id'):
+        return meta['render_id']
+    # Older exports have no UUID. Keep their download available, bound to the
+    # actual file revision, without altering an old manifest or its approvals.
+    path = Path(meta.get('path', ''))
+    try:
+        if not path.is_file():
+            return ''
+        info = path.stat()
+        version = f'{path.resolve()}:{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}'
+        return 'legacy-' + hashlib.sha256(version.encode()).hexdigest()[:16]
+    except OSError:
+        return ''
+
+
+def _artifact_result(video_id, kind, quality, render_id, clip_id=None, title=None):
+    label = clean_filename(title or clip_id or 'autoclips-montagem')[:55]
+    profile = 'previa-720p' if quality == 'preview' else 'final-1080p'
+    if kind == 'clip':
+        url = f'/api/videos/{video_id}/rendered/{clip_id}/{quality}?v={render_id}'
+    else:
+        url = f'/api/videos/{video_id}/timeline/rendered/{quality}?render_id={render_id}'
+    return {'video_id': video_id, 'kind': kind, 'clip_id': clip_id, 'quality': quality,
+            'render_id': render_id, 'url': url, 'filename': f'{label}-{profile}-{render_id}.mp4'}
+
+
+def _deliver_render(result, path):
+    """Queue only successful exports, with an immutable pin before old cleanup.
+
+    Called while LOCK is held. Enqueue performs local persistence only; the
+    upload worker owns all network operations and can outlive the browser.
+    A storage failure must never turn a completed render into a failed render.
+    """
+    owner = getattr(TASK_CONTEXT, 'delivery_owner', None) or REQUEST_OWNER.get()
+    if not owner:
+        return
+    try:
+        job = STORAGE_DELIVERY.enqueue(owner, {**result, 'path': str(path)}, automatic=True)
+        if job:
+            result['delivery_job'] = job
+    except DeliveryError as exc:
+        result['delivery_error'] = str(exc)
+    except Exception:
+        logging.getLogger('uvicorn.error').warning('Automatic storage enqueue failed for a completed export')
+        result['delivery_error'] = 'O corte está pronto, mas não entrou na fila de envio. Use Enviar novamente.'
+
+
+def _enqueue_export(owner, video_id, req):
+    """Resolve client identifiers against the current manifest; never a path."""
+    with LOCK:
+        video_info(video_id)
+        if req.kind == 'timeline':
+            doc, _ = _timeline_document(video_id)
+            meta = _current_export(video_id, req.quality, version=doc['version'])
+            title = None
+        else:
+            manifest, _, _ = get_manifest(video_id)
+            clip = next((c for c in manifest['clips'] if c['id'] == req.clip_id), None)
+            meta = clip.get(req.quality) if clip else None
+            title = clip.get('title') if clip else None
+            if (meta and meta.get('burn')
+                    and meta.get('transcript_signature') != _transcript_signature(video_id)):
+                raise HTTPException(409, 'A transcrição mudou. Gere uma nova prévia antes de enviar.')
+        if not meta or not Path(meta.get('path', '')).is_file():
+            raise HTTPException(404, 'Gere este corte antes de enviá-lo.')
+        if _render_identity(meta) != req.render_id:
+            raise HTTPException(409, 'Este arquivo foi substituído. Atualize o editor antes de enviar.')
+        artifact = _artifact_result(video_id, req.kind, req.quality, req.render_id, req.clip_id, title)
+        return STORAGE_DELIVERY.enqueue(owner, {**artifact, 'path': meta['path']}, provider=req.provider)
+
+
+app.include_router(build_storage_router(lambda: STORAGE_DELIVERY, _enqueue_export, lambda video_id: video_info(video_id)))

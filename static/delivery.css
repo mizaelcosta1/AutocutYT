@@ -1,0 +1,62 @@
+.storage-connections, .delivery-project { margin-top: 24px; padding: 22px; border: 1px solid #315367; border-radius: 16px; background: linear-gradient(145deg, #132b3a, #0e1e2d); min-width: 0; }
+.storage-connections { margin-bottom: 30px; }
+.delivery-project { width: 100%; }
+.delivery-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.delivery-heading > div { min-width: 0; }
+.delivery-heading h2 { margin: 3px 0 6px; font-size: 1.3rem; }
+.delivery-heading h3, .delivery-automation h3 { margin: 0 0 6px; font-size: 1.08rem; }
+.delivery-heading h4 { margin: 0; font-size: .94rem; }
+.delivery-heading p, .delivery-provider p { margin: 7px 0 12px; color: #bdcdda; font-size: .88rem; line-height: 1.65; }
+.delivery-eyebrow { color: #8ce8f3; font-size: .68rem; font-weight: 750; letter-spacing: .1em; }
+.delivery-providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.delivery-provider { padding: 18px; border: 1px solid #315367; border-radius: 12px; background: #0c1c2b; min-width: 0; }
+.delivery-badge { display: inline-flex; align-items: center; border: 1px solid #466074; color: #c2d2df; background: #152e40; border-radius: 999px; padding: 4px 9px; font-size: .7rem; line-height: 1.5; overflow-wrap: anywhere; }
+.delivery-badge.is-connected { color: #91edf4; border-color: #37808a; background: #12353e; }
+.delivery-badge.is-error { color: #ffc0c9; border-color: #964a58; background: #3c2633; }
+.delivery-buttons, .delivery-file-actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+.delivery-buttons { margin-top: 12px; }
+.delivery-button, .delivery-download { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 10px 13px; border: 1px solid #41677b; border-radius: 9px; background: #173548; color: #e9f7fc; text-decoration: none; font: inherit; font-weight: 650; font-size: .83rem; line-height: 1.45; text-align: center; cursor: pointer; white-space: normal; }
+.delivery-button:hover:not(:disabled), .delivery-download:hover { background: #22495d; border-color: #65becd; }
+.delivery-button:disabled { opacity: .53; cursor: not-allowed; }
+.delivery-primary, .delivery-download { color: #06222c; background: #51d7e6; border-color: #7deaf3; }
+.delivery-primary:hover:not(:disabled), .delivery-download:hover { color: #06222c; background: #80eaf4; }
+.delivery-danger { color: #ffc2cb; background: #382634; border-color: #8b4956; }
+.delivery-danger:hover:not(:disabled) { background: #54303e; border-color: #f58a99; }
+.delivery-link { color: #90e9f3; text-decoration: underline; text-underline-offset: 3px; font-size: .82rem; line-height: 1.6; overflow-wrap: anywhere; }
+.delivery-connect-link { display: inline-block; margin: 8px 0 0; }
+.delivery-button:focus-visible, .delivery-download:focus-visible, .delivery-link:focus-visible, .storage-connections :is(input,select):focus-visible { outline: 2px solid #67e8f9; outline-offset: 3px; }
+.storage-connections [hidden], .delivery-project [hidden], .delivery-file-actions [hidden], .delivery-timeline-send[hidden] { display: none !important; }
+.delivery-field { display: flex; flex-direction: column; gap: 7px; color: #b8cbd8; font-size: .71rem; letter-spacing: .035em; font-weight: 700; margin: 12px 0; min-width: 0; }
+.delivery-field input, .delivery-field select { width: 100%; min-width: 0; min-height: 44px; padding: 11px 12px; background: #081725; border: 1px solid #3a5a70; border-radius: 9px; color: #eff7fc; font: inherit; font-size: .9rem; letter-spacing: 0; font-weight: 400; }
+.delivery-automation { display: grid; gap: 10px; margin-top: 20px; padding-top: 22px; border-top: 1px solid #315367; }
+.delivery-automation > .delivery-button { justify-self: start; }
+.delivery-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.delivery-check { display: flex; align-items: flex-start; gap: 12px; color: #e5f0f8; font-size: .91rem; line-height: 1.5; }
+.delivery-check input { flex: 0 0 18px; width: 18px; height: 18px; margin: 3px 0 0; accent-color: #51d7e6; }
+.delivery-check small { display: block; color: #b8cbd8; font-size: .8rem; margin-top: 5px; }
+.delivery-hint { margin: 8px 0; color: #b8cbd8; font-size: .81rem; line-height: 1.6; overflow-wrap: anywhere; }
+.delivery-feedback { margin: 12px 0; padding: 12px 14px; border: 1px solid #398091; border-radius: 9px; background: #103441; color: #d7f9ff; font-size: .86rem; overflow-wrap: anywhere; }
+.delivery-error { color: #ffc1cc; font-size: .82rem; line-height: 1.6; overflow-wrap: anywhere; }
+.delivery-feedback.delivery-error { border-color: #98515f; background: #3b2633; }
+.delivery-history-heading { margin-top: 16px; align-items: center; }
+.delivery-job-list { list-style: none; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 0; margin: 12px 0 0; }
+.delivery-job { min-width: 0; padding: 14px; border: 1px solid #315367; border-radius: 11px; background: #0d202e; }
+.delivery-job strong { font-size: .84rem; overflow-wrap: anywhere; }
+.delivery-job progress { width: 100%; height: 7px; accent-color: #51d7e6; }
+.delivery-job .delivery-button { margin-top: 8px; }
+.delivery-download-notice { margin: 10px 0; padding: 13px; border: 1px solid #39748a; border-radius: 10px; background: #123042; }
+.delivery-download-notice p { margin: 0 0 10px; font-size: .82rem; color: #d7eef7; }
+.clip-media .delivery-file-actions { display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; width: 100%; }
+.delivery-output { display: grid; gap: 7px; border-top: 1px solid #315367; padding-top: 10px; }
+.delivery-output > span { display: grid; gap: 0; }
+.delivery-timeline-send { margin-top: 9px; }
+.delivery-timeline-send .delivery-button { width: 100%; }
+.delivery-project + footer { margin-top: 0; }
+@media (max-width: 760px) {
+  .delivery-providers, .delivery-settings-grid, .delivery-job-list { grid-template-columns: minmax(0, 1fr); }
+  .storage-connections, .delivery-project { padding: 16px; }
+  .delivery-provider { padding: 15px; }
+  .delivery-heading h2 { font-size: 1.2rem; }
+  .delivery-settings-grid { gap: 0; }
+  .delivery-automation > .delivery-button { justify-self: stretch; }
+}
