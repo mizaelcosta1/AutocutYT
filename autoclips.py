@@ -18,6 +18,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from urllib.request import Request, urlopen
@@ -338,31 +339,56 @@ def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
     width, height = output_dimensions(quality, config["aspect"])
     graph = build_composition_graph(layout, config, width, height)
     require_executables("ffmpeg", "ffprobe")
-    src, dst = Path(src).resolve(), Path(dst).resolve()
+    src, dst = Path(src).resolve(), Path(dst)
+    if dst.is_symlink():
+        raise ValueError("O destino da exportação não pode ser um link simbólico.")
+    dst = dst.resolve()
+    if src == dst:
+        raise ValueError("A exportação não pode substituir o vídeo original.")
+    # Guard ordinary source replacement/edits while FFmpeg reads it without
+    # another full-media copy on the small recording volume. Timeline exports
+    # additionally validate their stored SHA-256 before publishing the join.
+    def source_revision():
+        stat = src.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    revision = source_revision()
     dst.parent.mkdir(parents=True, exist_ok=True)
     ass_width, ass_height = output_dimensions("final", config["aspect"])
-    with prepared_ass(srt if burn else None, dst.parent, subtitle_style, layout_config=config) as ass_name:
-        if ass_name:
-            graph += f";[base]ass=filename='{ass_name}':original_size={ass_width}x{ass_height}[v]"
-        else:
-            graph += ";[base]null[v]"
-        duration = max(.1, clip["end"] - clip["start"])
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-               "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
-               "-filter_complex_threads", "2", "-filter_complex", graph, "-map", "[v]"]
-        if has_audio:
-            cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
-        else:
-            cmd += ["-an"]
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
-        run(cmd, cwd=dst.parent)
-    meta = probe(dst)
-    if meta["width"] != width or meta["height"] != height:
-        raise RuntimeError("Resolucao divergente em " + str(dst))
-    if abs(meta["duration"] - duration) > 1.5:
-        raise RuntimeError("Duracao divergente em " + str(dst))
-    run(["ffmpeg", "-v", "error", "-xerror", "-i", str(dst), "-f", "null", "-"])
+    # Every file owned by this attempt lives in its own sibling directory.
+    # An existing approved dst is untouched until all validations pass. SRT is
+    # caller-owned input and must never be deleted by this renderer.
+    with tempfile.TemporaryDirectory(prefix="autoclips-render-", dir=str(dst.parent)) as temp_name:
+        staging = Path(temp_name)
+        pending = staging / "render.mp4"
+        with prepared_ass(srt if burn else None, staging, subtitle_style, layout_config=config) as ass_name:
+            if ass_name:
+                graph += f";[base]ass=filename='{ass_name}':original_size={ass_width}x{ass_height}[v]"
+            else:
+                graph += ";[base]null[v]"
+            duration = max(.1, clip["end"] - clip["start"])
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
+                   "-filter_complex_threads", "2", "-filter_complex", graph, "-map", "[v]"]
+            if has_audio:
+                cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
+            else:
+                cmd += ["-an"]
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(pending)]
+            run(cmd, cwd=staging)
+        meta = probe(pending)
+        if meta["width"] != width or meta["height"] != height:
+            raise RuntimeError("Resolucao divergente em " + str(dst))
+        if abs(meta["duration"] - duration) > 1.5:
+            raise RuntimeError("Duracao divergente em " + str(dst))
+        run(["ffmpeg", "-v", "error", "-xerror", "-i", str(pending), "-f", "null", "-"])
+        try:
+            unchanged = source_revision() == revision
+        except FileNotFoundError:
+            unchanged = False
+        if not unchanged:
+            raise ValueError("O vídeo original mudou durante a exportação.")
+        pending.replace(dst)
     return {**meta, "layout_config": config, "output_width": width, "output_height": height}
 
 

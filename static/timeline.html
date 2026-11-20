@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#08121d">
-  <title>AutoClips Studio v0.7.5 | Montagem de trechos</title>
+  <title>AutoClips Studio v0.7.6 | Montagem de trechos</title>
   <link rel="stylesheet" href="/static/timeline.css">
   <link rel="stylesheet" href="/static/layout-editor.css">
 </head>
@@ -13,11 +13,13 @@
 <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
 <header class="topbar">
   <a class="back" href="/" aria-label="Voltar ao AutoClips">← <span>AutoClips</span></a>
-  <div class="header-title"><span class="eyebrow">EDITOR · v0.7.5</span><h1>Montagem de trechos</h1><p id="project-title">Carregando projeto...</p></div>
+  <div class="header-title"><span class="eyebrow">EDITOR · v0.7.6</span><h1>Montagem de trechos</h1><p id="project-title">Carregando projeto...</p></div>
   <span class="state-tag">SEU ORIGINAL É PRESERVADO</span>
 </header>
 <main class="workspace" id="main-content" tabindex="-1">
+  <div id="video-activity" hidden><span data-message role="status" aria-live="polite"></span> <button type="button" class="secondary" hidden>Atualizar atividade</button></div>
   <div class="upper-grid">
+    <div class="edit-stack">
     <section class="panel player-panel" aria-label="Preview do projeto">
       <div class="panel-head"><div><span class="eyebrow">VÍDEO ORIGINAL</span><h2>Veja e ajuste seus cortes</h2></div><span class="pill" id="time-indicator">00:00 / 00:00</span></div>
       <div class="player-box"><video id="source-player" controls playsinline preload="metadata" aria-label="Reprodução do vídeo original"></video><span class="player-hint">Prévia dos trechos no original</span></div>
@@ -41,37 +43,6 @@
         </div>
       </div>
     </section>
-    <aside class="panel export-panel" aria-label="Exportação da montagem">
-      <div class="panel-head"><div><span class="eyebrow">PRÉVIA E ARQUIVO FINAL</span><h2>Exportar montagem</h2></div></div>
-      <p class="hint">Os trechos serão unidos na ordem da timeline. Revise a prévia antes de baixar o vídeo final.</p>
-      <div id="layout-editor" class="layout-editor"></div>
-      <label class="field">ENQUADRAMENTO<select id="export-layout"><option value="blur">Fundo desfocado</option><option value="fit">Vídeo inteiro com bordas</option><option value="crop">Recorte central</option></select></label>
-      <label class="check"><input id="export-subtitles" type="checkbox"> Incluir legendas no vídeo</label>
-      <details class="subtitle-options" open>
-        <summary>Personalizar legendas</summary>
-        <div class="subtitle-settings">
-          <label for="subtitle-font">FONTE<select id="subtitle-font"><option value="DejaVu Sans">DejaVu Sans · sem serifa</option><option value="DejaVu Serif">DejaVu Serif · com serifa</option><option value="Liberation Sans">Liberation Sans · sem serifa</option><option value="Liberation Serif">Liberation Serif · com serifa</option><option value="Noto Sans">Noto Sans · sem serifa</option></select></label>
-          <label for="subtitle-size">TAMANHO EM 1080p<input id="subtitle-size" type="number" min="18" max="96" step="1" value="56" inputmode="numeric" aria-describedby="subtitle-style-help"></label>
-          <label for="subtitle-color">COR DO TEXTO<input id="subtitle-color" type="color" value="#ffffff"></label>
-        </div>
-        <div class="subtitle-preview" aria-label="Amostra do estilo de legenda"><span class="sample-label">AMOSTRA DO ESTILO</span><span id="subtitle-sample">A legenda aparece assim</span></div>
-        <p id="subtitle-style-help" class="hint">O contorno escuro ajuda na leitura. Confira o resultado na prévia do vídeo. As legendas vêm da transcrição, disponível abaixo da timeline.</p>
-      </details>
-      <hr>
-      <label class="check"><input id="approve-selection" type="checkbox"> Revisei os cortes e autorizo gerar a prévia.</label>
-      <button id="render-preview" class="primary full">1 · Gerar prévia 720p</button>
-      <p class="hint" id="preview-status">Prévia ainda não gerada.</p>
-      <video id="preview-video" class="result-video hidden" controls playsinline aria-label="Prévia renderizada"></video>
-      <a id="preview-link" class="download hidden" download="autoclips-previa.mp4">Baixar prévia MP4</a>
-      <hr>
-      <label class="check"><input id="approve-preview" type="checkbox"> Assisti à prévia e aprovo esta versão para exportação final.</label>
-      <button id="render-final" class="primary full" disabled>2 · Exportar final 1080p</button>
-      <p class="hint" id="final-status">Exportação final indisponível até aprovação da prévia.</p>
-      <a id="final-link" class="download hidden" download="autoclips-final.mp4">Baixar vídeo final MP4</a>
-      <details class="safety-note"><summary>Qualidade e publicação</summary><p>Prévia em 720p. Final em 1080p. Mudanças no corte ou no estilo exigem uma nova prévia. Para publicar, volte ao editor de clipes e aprove o envio para a plataforma.</p></details>
-    </aside>
-  </div>
-
   <section class="panel timeline-panel" aria-label="Timeline de edição">
     <div class="panel-head"><div><span class="eyebrow">ORGANIZE SUA HISTÓRIA</span><h2>Timeline de cortes</h2><p class="hint">Toque em um trecho para selecionar. Use os controles acima para ajustar ou mudar a ordem.</p></div>
       <div class="toolbar"><button class="secondary" id="undo" disabled>↶ Desfazer</button><button class="secondary" id="redo" disabled>↷ Refazer</button></div>
@@ -102,8 +73,40 @@
     <div id="transcript-words" class="word-list" aria-live="polite"></div>
     <details class="transcript-help"><summary>Como funciona a redução de pausas?</summary><p class="hint">Após gerar a transcrição, escolha quanto tempo de silêncio conta como pausa longa e clique em reduzir. A montagem é atualizada; você pode desfazer. O vídeo original permanece intacto.</p><p class="hint">SRT e VTT guardam as falas e seus tempos. Fonte, cor e tamanho são aplicados ao vídeo exportado.</p></details>
   </section>
-  <footer>AutoClips AI Studio v0.7.5 · Montagem de cortes, transcrição e legendas</footer>
+    </div>
+    <aside class="panel export-panel" aria-label="Exportação da montagem">
+      <div class="panel-head"><div><span class="eyebrow">PRÉVIA E ARQUIVO FINAL</span><h2>Exportar montagem</h2></div></div>
+      <p class="hint">Os trechos serão unidos na ordem da timeline. Revise a prévia antes de baixar o vídeo final.</p>
+      <div id="layout-editor" class="layout-editor"></div>
+      <label class="field">ENQUADRAMENTO<select id="export-layout"><option value="blur">Fundo desfocado</option><option value="fit">Vídeo inteiro com bordas</option><option value="crop">Recorte central</option></select></label>
+      <label class="check"><input id="export-subtitles" type="checkbox"> Incluir legendas no vídeo</label>
+      <details class="subtitle-options" open>
+        <summary>Personalizar legendas</summary>
+        <div class="subtitle-settings">
+          <label for="subtitle-font">FONTE<select id="subtitle-font"><option value="DejaVu Sans">DejaVu Sans · sem serifa</option><option value="DejaVu Serif">DejaVu Serif · com serifa</option><option value="Liberation Sans">Liberation Sans · sem serifa</option><option value="Liberation Serif">Liberation Serif · com serifa</option><option value="Noto Sans">Noto Sans · sem serifa</option></select></label>
+          <label for="subtitle-size">TAMANHO EM 1080p<input id="subtitle-size" type="number" min="18" max="96" step="1" value="56" inputmode="numeric" aria-describedby="subtitle-style-help"></label>
+          <label for="subtitle-color">COR DO TEXTO<input id="subtitle-color" type="color" value="#ffffff"></label>
+        </div>
+        <div class="subtitle-preview" aria-label="Amostra do estilo de legenda"><span class="sample-label">AMOSTRA DO ESTILO</span><span id="subtitle-sample">A legenda aparece assim</span></div>
+        <p id="subtitle-style-help" class="hint">O contorno escuro ajuda na leitura. Confira o resultado na prévia do vídeo. As legendas vêm da transcrição, disponível abaixo da timeline.</p>
+      </details>
+      <hr>
+      <label class="check"><input id="approve-selection" type="checkbox"> Revisei os cortes e autorizo gerar a prévia.</label>
+      <button id="render-preview" class="primary full">1 · Gerar prévia 720p</button>
+      <p class="hint" id="preview-status">Prévia ainda não gerada.</p>
+      <video id="preview-video" class="result-video hidden" controls playsinline aria-label="Prévia renderizada"></video>
+      <a id="preview-link" class="download hidden" download="autoclips-previa.mp4">Baixar prévia MP4</a>
+      <hr>
+      <label class="check"><input id="approve-preview" type="checkbox"> Assisti à prévia e aprovo esta versão para exportação final.</label>
+      <button id="render-final" class="primary full" disabled>2 · Exportar final 1080p</button>
+      <p class="hint" id="final-status">Exportação final indisponível até aprovação da prévia.</p>
+      <a id="final-link" class="download hidden" download="autoclips-final.mp4">Baixar vídeo final MP4</a>
+      <details class="safety-note"><summary>Qualidade e publicação</summary><p>Prévia em 720p. Final em 1080p. Mudanças no corte ou no estilo exigem uma nova prévia. Para publicar, volte ao editor de clipes e aprove o envio para a plataforma.</p></details>
+    </aside>
+  </div>
+  <footer>AutoClips AI Studio v0.7.6 · Montagem de cortes, transcrição e legendas</footer>
 </main>
+<script src="/static/video-activity.js"></script>
 <script src="/static/layout-editor.js"></script>
 <script src="/static/timeline.js"></script>
 </body></html>

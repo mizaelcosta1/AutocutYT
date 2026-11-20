@@ -64,6 +64,7 @@ async function fixture(options = {}) {
       const handled = options.intercept(call, { state, tasks, reply, transcriptResponse });
       if (handled !== undefined) return await handled;
     }
+    if (call.pathname.endsWith('/activity')) return reply({activity:null});
     if (call.pathname === '/api/videos') return reply({ videos: [{ id: videoId, name: 'Gravação de teste', duration: 60, width: 1920, height: 1080 }] });
     if (call.pathname === '/api/config') return reply({ transcribe_available: options.available !== false });
     if (call.pathname === base + '/timeline' && call.method === 'GET') return reply({
@@ -105,6 +106,7 @@ async function fixture(options = {}) {
     }
     throw new Error('Unexpected fixture request: ' + call.method + ' ' + call.pathname);
   };
+  win.eval(fs.readFileSync(path.join(repo, 'static/video-activity.js'), 'utf8'));
   win.eval(script);
   await until(() => !win.document.querySelector('#subtitle-font').disabled && calls.some((c) => c.pathname === base + '/timeline/exports'), 'initial project data');
   await sleep(0);

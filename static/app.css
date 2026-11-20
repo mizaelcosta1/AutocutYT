@@ -27,6 +27,8 @@ html, body {
 .small { font-size: 0.85rem; }
 .muted { color: var(--muted); }
 .spaced { margin-top: 12px; }
+#video-activity:not([hidden]) { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid #35798a; border-radius: 12px; background: #103444; color: #d3f7fc; }
+#video-activity [data-message] { flex: 1 1 240px; overflow-wrap: anywhere; }
 
 .shell { display: flex; min-height: 100vh; }
 

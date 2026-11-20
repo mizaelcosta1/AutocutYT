@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#08121d">
-  <title>AutoClips AI Studio v0.7.5</title>
+  <title>AutoClips AI Studio v0.7.6</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/layout-editor.css">
 </head>
@@ -20,12 +20,12 @@
     <button class="nav" data-tab="connections"><span aria-hidden="true">◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="storage-dot" aria-hidden="true"></div><div><b>Armazenamento</b><p id="storage-info">Consultando espaço disponível...</p></div></div>
-    <div class="sidebar-foot">AutoClips Studio · v0.7.5<br><a href="/logout">Sair da conta</a></div>
+    <div class="sidebar-foot">AutoClips Studio · v0.7.6<br><a href="/logout">Sair da conta</a></div>
   </aside>
   <div class="main-wrap">
     <header class="topbar">
       <div class="mobile-brand"><span aria-hidden="true">▶</span> <b>AutoClips AI</b></div>
-      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.5</span>
+      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.7.6</span>
       <div class="platforms" aria-label="Plataformas compatíveis"><span class="pill"><i class="dot tw" aria-hidden="true"></i>Twitch</span><span class="pill"><i class="dot yt" aria-hidden="true"></i>YouTube</span><span class="pill"><i class="dot kick" aria-hidden="true"></i>Kick</span></div>
     </header>
     <main id="main-content" tabindex="-1">
@@ -82,7 +82,8 @@
         <div class="section-heading editor-heading"><div><span class="overline">CORTES E LEGENDAS</span><h1 id="editor-title">Editor de clipes</h1><p id="editor-subtitle">Selecione um vídeo da biblioteca para começar.</p></div><div class="btn-row"><button class="outline" id="back-library">Biblioteca</button><button class="primary" id="btn-advanced-timeline" disabled>Abrir montagem de trechos</button></div></div>
         <div id="editor-empty" class="empty-state"><div aria-hidden="true">✂</div><h3>Escolha um vídeo para editar</h3><p>Envie um arquivo, importe um link ou encerre a gravação de uma live.</p><button class="primary" id="empty-go">Novo projeto</button></div>
         <div id="editor-body" class="hidden">
-          <div class="editor-layout">
+          <div id="video-activity" hidden><span data-message role="status" aria-live="polite"></span> <button type="button" class="outline" hidden>Atualizar atividade</button></div>
+<div class="editor-layout">
             <section class="editor-main" aria-label="Vídeo, recortes e legendas">
               <div class="video-frame"><video id="editor-player" controls playsinline preload="metadata" aria-label="Vídeo original"></video></div>
               <div class="panel editor-controls">
@@ -181,6 +182,7 @@
 <nav class="mobile-tabs" aria-label="Navegação do estúdio"><button data-tab="sources" class="active"><span aria-hidden="true">↥</span><span>Início</span></button><button data-tab="library"><span aria-hidden="true">□</span><span>Biblioteca</span></button><button data-tab="editor"><span aria-hidden="true">✂</span><span>Editor</span></button><button data-tab="connections"><span aria-hidden="true">◎</span><span>Conexões</span></button></nav>
 <script src="/static/hls.min.js"></script>
 <script src="/static/live-preview.js"></script>
+<script src="/static/video-activity.js"></script>
 <script src="/static/layout-editor.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/connections.js"></script>

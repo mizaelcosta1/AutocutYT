@@ -43,7 +43,7 @@ from live_preview import start_capture, preview_directory, preview_status, resol
 from composition import LayoutConfig, normalize_layout_config, require_face
 from layout_presets import builtin_presets
 
-APP_VERSION = "0.7.5"
+APP_VERSION = "0.7.6"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -58,8 +58,8 @@ CHUNK_SIZE = 8 * 1024 * 1024
 LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autoclips")
 LIVE: dict[str, dict] = {}
-PENDING_PUBLISH: set[tuple[str, str]] = set()
-PROCESSING_VIDEOS: set[str] = set()
+PENDING_PUBLISH: dict[tuple[str, str], str] = {}
+PROCESSING_VIDEOS: dict[str, str] = {}
 RENDERING: set[tuple[str, str]] = set()
 TASK_CONTEXT = threading.local()
 PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
@@ -200,31 +200,55 @@ def task_progress(progress: dict) -> None:
             TASK_CONTEXT.last_save = now
 
 
-def schedule(kind: str, fn, *args, **kwargs) -> str:
+def _bind_video_task(task_id: str, video_id: str) -> None:
+    TASKS[task_id]["video_id"] = video_id
+    PROCESSING_VIDEOS[video_id] = task_id
+
+
+def schedule(kind: str, fn, *, video_id: str | None = None,
+             publish_key: tuple[str, str] | None = None) -> str:
     task_id = uuid.uuid4().hex
-    with LOCK:
-        TASKS[task_id] = {"id": task_id, "kind": kind, "status": "queued", "created_at": utcnow()}
-        _save_tasks()
+    task = {"id": task_id, "kind": kind, "status": "queued", "created_at": utcnow()}
+
+    def release():
+        bound_video = task.get("video_id")
+        if bound_video and PROCESSING_VIDEOS.get(bound_video) == task_id:
+            PROCESSING_VIDEOS.pop(bound_video)
+        if publish_key is not None and PENDING_PUBLISH.get(publish_key) == task_id:
+            PENDING_PUBLISH.pop(publish_key)
 
     def do_work():
         TASK_CONTEXT.task_id = task_id
-        with LOCK:
-            TASKS[task_id]["status"] = "running"
-            _save_tasks()
+        TASK_CONTEXT.last_save = 0
+        outcome = {"status": "interrupted", "error": "Processamento interrompido."}
         try:
-            result = fn(*args, **kwargs)
+            with LOCK:
+                task["status"] = "running"
+                _save_tasks()
+            outcome = {"status": "done", "result": fn()}
         except Exception as exc:
-            with LOCK:
-                TASKS[task_id].update(status="error", error=str(exc)[:500], ended_at=utcnow())
-                _save_tasks()
-        else:
-            with LOCK:
-                TASKS[task_id].update(status="done", result=result, ended_at=utcnow())
-                _save_tasks()
+            error = exc.detail if isinstance(exc, HTTPException) else exc
+            outcome = {"status": "error", "error": str(error)[:500]}
         finally:
             TASK_CONTEXT.task_id = None
+            with LOCK:
+                task.update(outcome, ended_at=utcnow())
+                release()
+                _save_tasks()
 
-    POOL.submit(do_work)
+    with LOCK:
+        TASKS[task_id] = task
+        if video_id is not None:
+            _bind_video_task(task_id, video_id)
+        if publish_key is not None:
+            PENDING_PUBLISH[publish_key] = task_id
+        try:
+            _save_tasks()
+            POOL.submit(do_work)
+        except Exception:
+            release()
+            TASKS.pop(task_id)
+            raise
     return task_id
 
 
@@ -327,7 +351,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
@@ -473,11 +497,11 @@ class LayoutSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     layout: Literal["blur", "fit", "crop"] = "blur"
     layout_config: LayoutConfig = Field(default_factory=LayoutConfig)
+    subtitles: bool | None = None
 
 
 class LayoutPreset(LayoutSettings):
     name: str = Field(min_length=1, max_length=60)
-    subtitles: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -504,8 +528,13 @@ def save_layout_settings(video_id: str, settings: LayoutSettings):
     # a selected face region. Saving never changes an already rendered file.
     with LOCK:
         file = _project_folder(video_id) / "layout.json"
-        write_json(file, settings.model_dump())
-    return settings.model_dump()
+        payload = settings.model_dump()
+        if "subtitles" not in settings.model_fields_set:
+            saved = read_json(file, {})
+            previous = saved.get("subtitles") if isinstance(saved, dict) else None
+            payload["subtitles"] = previous if isinstance(previous, bool) else None
+        write_json(file, payload)
+    return payload
 
 
 @app.get("/api/layout-presets")
@@ -612,24 +641,45 @@ def _update_video(video_id: str, **changes) -> dict:
         return item
 
 
-def _schedule_video(kind: str, video_id: str, fn) -> str:
+@app.get("/api/videos/{video_id}/activity")
+def video_activity(video_id: str):
     with LOCK:
+        video_info(video_id)
+        task_id = PROCESSING_VIDEOS.get(video_id)
+        if not task_id:
+            task_id = next((pending for key, pending in PENDING_PUBLISH.items() if key[0] == video_id), None)
+        task = TASKS.get(task_id) if task_id else None
+        activity = None
+        if task and task["status"] in {"queued", "running"}:
+            activity = {"task_id": task_id, **{key: task[key] for key in
+                        ("kind", "status", "phase", "progress", "message") if key in task}}
+    return JSONResponse({"activity": activity}, headers={"Cache-Control": "private, no-store"})
+
+
+def _schedule_video(kind: str, video_id: str, fn, *, preflight=None) -> str:
+    with LOCK:
+        video_info(video_id)
         if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
                 or any(key[0] == video_id for key in PENDING_PUBLISH)):
             raise HTTPException(409, "Este vídeo está em processamento. Aguarde a tarefa terminar.")
-        PROCESSING_VIDEOS.add(video_id)
-    def work():
-        try:
-            return fn()
-        finally:
-            with LOCK:
-                PROCESSING_VIDEOS.discard(video_id)
-    try:
-        return schedule(kind, work)
-    except Exception:
-        with LOCK:
-            PROCESSING_VIDEOS.discard(video_id)
-        raise
+        if preflight is not None:
+            preflight()
+        return schedule(kind, fn, video_id=video_id)
+
+
+def _require_render_space(quality: str, duration: float, *, timeline: bool = False) -> None:
+    # CRF output depends on the footage. Estimate 3 Mb/s for 720p, 8 Mb/s for
+    # 1080p and 160 kb/s for AAC, plus headroom for metadata and sidecars.
+    # Timeline assembly briefly holds both the fragments and the joined file.
+    video_bitrate = 3_000_000 if quality == "preview" else 8_000_000
+    copies = 2 if timeline else 1
+    estimate = 8 * 1024 * 1024 + math.ceil(max(.1, duration) * (video_bitrate + 160_000) * copies / 8)
+    free = shutil.disk_usage(ROOT).free
+    if free < estimate:
+        needed_mb = f"{estimate / 1_000_000:.1f}".replace(".", ",")
+        free_mb = f"{free / 1_000_000:.1f}".replace(".", ",")
+        raise HTTPException(507, f"Espaço insuficiente para renderizar. Estimativa de {needed_mb} MB, "
+                            f"com {free_mb} MB livres. Use um trecho menor ou libere espaço na biblioteca.")
 
 
 def _transcribe_for_video(video_id: str, *, force: bool = False) -> dict:
@@ -640,7 +690,9 @@ def _transcribe_for_video(video_id: str, *, force: bool = False) -> dict:
     source = Path(video_info(video_id)["path"])
     folder = _project_folder(video_id)
     folder.mkdir(parents=True, exist_ok=True)
-    _update_video(video_id, transcription={"status": "running", "message": "Preparando transcrição."})
+    with LOCK:
+        task_progress({"phase": "waiting", "progress": 0, "message": "Preparando transcrição."})
+        _update_video(video_id, transcription={"status": "running", "message": "Preparando transcrição."})
     try:
         result = transcript_local(source, progress=task_progress)
         with LOCK:
@@ -731,10 +783,18 @@ def edit_video_timeline(video_id: str, req: TimelineEditRequest):
 
 @app.get("/api/videos/{video_id}/transcript")
 def get_video_transcript(video_id: str):
-    data = _transcript_document(video_id)
+    with LOCK:
+        data = _transcript_document(video_id)
+        state = video_info(video_id).get("transcription", {})
+        if isinstance(state, dict) and state.get("status") == "running":
+            task = TASKS.get(PROCESSING_VIDEOS.get(video_id), {})
+            if (task.get("status") != "running"
+                    or task.get("phase") not in {"waiting", "loading_model", "transcribing", "done"}):
+                state = {**state, "status": "error",
+                         "message": "A transcrição anterior foi interrompida. Tente gerar a transcrição novamente."}
     return {"available": bool(data.get("words")), "engine": data.get("engine", "none"),
             "words": data.get("words", []), "notice": data.get("notice"),
-            "state": video_info(video_id).get("transcription", {}),
+            "state": state,
             "subtitle_style": _subtitle_style(video_id)}
 
 
@@ -869,8 +929,10 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
             raise HTTPException(409, "Transcreva o vídeo e selecione trechos com fala antes de ativar legendas.")
         render_id = uuid.uuid4().hex[:12]
         dest = folder_path.parent / "renders" / f"timeline-v{doc['version']}-{quality}-{render_id}.mp4"
+        duration = total_duration(doc_snapshot)
 
     def work():
+        _require_render_space(quality, duration, timeline=True)
         meta = render_project(source, dest, doc_snapshot, words=words,
                               quality=quality, layout=req.layout, subtitles=req.subtitles,
                               subtitle_style=style, layout_config=composition)
@@ -897,7 +959,8 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
                     Path(previous["path"]).unlink(missing_ok=True)
         return {"quality": quality, "url": f"/api/videos/{video_id}/timeline/rendered/{quality}"}
 
-    return {"task_id": _schedule_video("timeline-" + quality, video_id, work)}
+    return {"task_id": _schedule_video("timeline-" + quality, video_id, work,
+                                       preflight=lambda: _require_render_space(quality, duration, timeline=True))}
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
@@ -1061,16 +1124,12 @@ def import_vod(req: VodDownloadRequest):
             "height": meta["height"],
             "thumbnail": str(thumb) if thumb else None,
         }
-        save_video(item)
         with LOCK:
-            PROCESSING_VIDEOS.add(vid)
-        try:
-            result = _prepare_recorded_video(vid, analyze_after=req.analyze_after,
-                                             transcribe_after=req.transcribe_after, auto_preview=req.auto_preview)
-            return {**result, "name": downloaded.name}
-        finally:
-            with LOCK:
-                PROCESSING_VIDEOS.discard(vid)
+            save_video(item)
+            _bind_video_task(TASK_CONTEXT.task_id, vid)
+        result = _prepare_recorded_video(vid, analyze_after=req.analyze_after,
+                                         transcribe_after=req.transcribe_after, auto_preview=req.auto_preview)
+        return {**result, "name": downloaded.name}
 
     return {"task_id": schedule("download-vod", job)}
 
@@ -1337,10 +1396,8 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         title = (req.title or clip.get("title") or "Corte AutoClips #Shorts").strip()
         desc = (req.description or clip.get("description") or clip.get("excerpt") or "Editado no AutoClips AI Studio").strip()
         tags = req.tags or clip.get("tags") or ["Shorts", "AutoClips"]
-        PENDING_PUBLISH.add(publish_key)
 
-    def job():
-        try:
+        def job():
             res = upload_youtube_video(
                 CONNECTION_VAULT,
                 final_path,
@@ -1356,16 +1413,8 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
                     cur["youtube"] = res
                     write_json(w / "manifest.json", m)
             return res
-        finally:
-            with LOCK:
-                PENDING_PUBLISH.discard(publish_key)
 
-    try:
-        return {"task_id": schedule("publish-youtube", job)}
-    except Exception:
-        with LOCK:
-            PENDING_PUBLISH.discard(publish_key)
-        raise
+        return {"task_id": schedule("publish-youtube", job, publish_key=publish_key)}
 
 
 def _preview_matches(clip: dict, layout: str, burn: bool, style: dict, signature: str,
@@ -1399,18 +1448,22 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
             raise ValueError("O original foi alterado; analise novamente")
         has_audio = bool(manifest["probe"]["audio_codec"])
         words = _transcript_document(video_id).get("words", [])
+    _require_render_space(quality, clip["end"] - clip["start"])
     folder = work / quality
     folder.mkdir(parents=True, exist_ok=True)
     render_id = uuid.uuid4().hex[:12]
     dest = folder / f"{clip_id}-{render_id}.mp4"
-    subs = folder / f"{clip_id}-{render_id}.srt"
-    if not generate_srt(words, clip["start"], clip["end"], subs):
-        subs = None
-    if burn and subs is None:
-        raise ValueError("Este corte não tem falas transcritas. Transcreva o vídeo ou desative as legendas.")
-    metadata = render_clip(source, dest, clip, quality=quality, layout=layout,
-                           burn=burn, srt=subs, has_audio=has_audio, subtitle_style=style,
-                           layout_config=composition)
+    srt_path = folder / f"{clip_id}-{render_id}.srt"
+    try:
+        subs = srt_path if generate_srt(words, clip["start"], clip["end"], srt_path) else None
+        if burn and subs is None:
+            raise ValueError("Este corte não tem falas transcritas. Transcreva o vídeo ou desative as legendas.")
+        metadata = render_clip(source, dest, clip, quality=quality, layout=layout,
+                               burn=burn, srt=subs, has_audio=has_audio, subtitle_style=style,
+                               layout_config=composition)
+    except Exception:
+        srt_path.unlink(missing_ok=True)
+        raise
     if not source.exists() or sha256_file(source) != source_signature:
         dest.unlink(missing_ok=True)
         if subs:
@@ -1472,7 +1525,8 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
         raise HTTPException(409, "Gere e aprove uma prévia com estas opções de enquadramento e legenda.")
     return {"task_id": _schedule_video("render-" + quality, video_id,
                 lambda: render_one(video_id, req.clip_id, quality, req.layout, req.subtitles, style,
-                                   composition, req.approved_preview_id))}
+                                   composition, req.approved_preview_id),
+                preflight=lambda: _require_render_space(quality, clip["end"] - clip["start"]))}
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")

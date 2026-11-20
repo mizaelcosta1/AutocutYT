@@ -186,11 +186,28 @@ def test_publish_prevents_two_concurrent_upload_tasks(tmp_path, monkeypatch):
                    'selected': True, 'final': {'path': str(final)}}],
         'probe': {'duration': 20.0}, 'ranking': 'manual', 'transcription_engine': 'none'
     })
-    monkeypatch.setattr(server, 'schedule', lambda *args, **kwargs: 'task-in-progress')
+    queued = []
+    monkeypatch.setattr(server.POOL, 'submit', queued.append)
+
+    def fail_upload(*args, **kwargs):
+        raise RuntimeError('falha de envio simulada')
+
+    monkeypatch.setattr(server, 'upload_youtube_video', fail_upload)
     client = TestClient(server.app)
-    path = f'/api/videos/{video_id}/clips/clip_01/publish/youtube'
-    assert client.post(path, json={'approved_publish': True}).status_code == 200
+    project = f'/api/videos/{video_id}'
+    path = f'{project}/clips/clip_01/publish/youtube'
+    sent = client.post(path, json={'approved_publish': True})
+    assert sent.status_code == 200, sent.text
+    task_id = sent.json()['task_id']
+    assert client.get(f'/api/tasks/{task_id}').json()['status'] == 'queued'
+    assert client.get(f'{project}/activity').json() == {'activity': {
+        'task_id': task_id, 'kind': 'publish-youtube', 'status': 'queued',
+    }}
     assert client.post(path, json={'approved_publish': True}).status_code == 409
+    worker, = queued
+    worker()
+    assert client.get(f'/api/tasks/{task_id}').json()['status'] == 'error'
+    assert client.get(f'{project}/activity').json() == {'activity': None}
 
 
 def test_edit_changed_clip_reclaims_only_managed_previous_renders(tmp_path, monkeypatch):
@@ -234,12 +251,24 @@ def test_cannot_change_or_remove_a_clip_while_youtube_upload_in_progress(tmp_pat
                    'selected': True, 'final': {'path': str(final)}}],
         'probe': {'duration': 20.0}, 'ranking': 'manual', 'transcription_engine': 'none',
     })
-    monkeypatch.setattr(server, 'schedule', lambda *args, **kwargs: 'task-pending')
+    queued = []
+    monkeypatch.setattr(server.POOL, 'submit', queued.append)
+    monkeypatch.setattr(server, 'upload_youtube_video',
+                        lambda *args, **kwargs: {'youtube_video_id': 'test-upload'})
     client = TestClient(server.app)
-    sent = client.post(f'/api/videos/{video_id}/clips/clip_01/publish/youtube', json={'approved_publish': True})
+    project = f'/api/videos/{video_id}'
+    sent = client.post(f'{project}/clips/clip_01/publish/youtube', json={'approved_publish': True})
     assert sent.status_code == 200
-    editing = client.put(f'/api/videos/{video_id}/clips', json={
-        'clips': [{'id': 'clip_01', 'title': 'Changed', 'start': 1, 'end': 3, 'selected': True}]})
-    removing = client.delete(f'/api/videos/{video_id}/clips/clip_01')
+    task_id = sent.json()['task_id']
+    assert client.get(f'{project}/activity').json()['activity']['task_id'] == task_id
+    changes = {'clips': [{'id': 'clip_01', 'title': 'Changed', 'start': 1, 'end': 3, 'selected': True}]}
+    editing = client.put(f'{project}/clips', json=changes)
+    removing = client.delete(f'{project}/clips/clip_01')
     assert editing.status_code == 409, editing.text
     assert removing.status_code == 409, removing.text
+    worker, = queued
+    worker()
+    assert client.get(f'/api/tasks/{task_id}').json()['status'] == 'done'
+    assert client.get(f'{project}/activity').json() == {'activity': None}
+    assert client.put(f'{project}/clips', json=changes).status_code == 200
+    assert client.delete(f'{project}/clips/clip_01').status_code == 200

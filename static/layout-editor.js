@@ -20,7 +20,18 @@
     const select = typeof layoutSelect === 'string' ? document.querySelector(layoutSelect) : layoutSelect;
     if (!root || !select) throw new Error('Editor de composição sem elemento necessário.');
     let id = videoId, config = defaults(), presets = [], custom = [], region = 'face', candidates = [], destroyed = false, saveTimer, requestGeneration = 0, dirtyCoordinates = false, loaded = false, revision = 0, persistedRevision = 0, saveQueue = Promise.resolve();
+    let preferredSubtitles = null;
+    const restoreSubtitles = () => {
+      if (loaded && typeof preferredSubtitles === 'boolean') onPresetSubtitles(preferredSubtitles);
+    };
+    const subtitleSetting = () => preferredSubtitles ?? getSubtitles() ?? null;
+    function subtitlesChanged() {
+      if (!loaded || destroyed) return;
+      preferredSubtitles = getSubtitles() ?? null;
+      notify();
+    }
     const listeners = new AbortController();
+    const activity = window.VideoActivity;
     const selectLabel = document.querySelector(`label[for="${select.id}"]`) || select.closest('label');
     root.innerHTML = `<fieldset class="le-shell" disabled><div class="le-head"><strong>Formato e composição</strong><span>Escolha um modelo e ajuste como quiser.</span></div>
       <p class="le-status" role="status" aria-live="polite"></p><div class="le-presets" aria-label="Modelos de composição"></div>
@@ -39,9 +50,18 @@
       <p class="le-error" role="status" aria-live="polite"></p><button type="button" class="le-reset">Usar vídeo inteiro nesta área</button></details></fieldset>`;
     const $ = s => root.querySelector(s);
     const status = msg => { if (!destroyed) $('.le-status').textContent = msg; };
-    const enable = active => { if (!destroyed) { $('.le-shell').disabled = !active; select.disabled = !active; } };
+    const enable = active => { active = active && !activity.busy(id); if (!destroyed) { $('.le-shell').disabled = !active; select.disabled = !active; } };
+    window.addEventListener('video-activity', ({detail}) => {
+      if (id === detail.id) enable(loaded);
+    }, {signal:listeners.signal});
+    window.addEventListener('video-task-restored', ({detail}) => {
+      if (id === detail.id && loaded && detail.kind === 'detect-faces' && detail.result) {
+        candidates = detail.result.candidates || []; paint();
+        status(candidates.length ? 'Escolha um rosto sugerido.' : 'Nenhum rosto encontrado. Ajuste a área manualmente.');
+      }
+    }, {signal:listeners.signal});
     enable(false);
-    async function json(url, opts) { const response = await fetch(url, opts); if (!response.ok) { let detail; try { const body = await response.json(); if (typeof body.detail === 'string') detail = body.detail; } catch (_) {} throw new Error(detail || 'Não foi possível concluir esta ação.'); } return response.json(); }
+    async function json(url, opts) { const response = await fetch(url, opts); if (!response.ok) { let detail; try { const body = await response.json(); if (typeof body.detail === 'string') detail = body.detail; } catch (_) {} throw Object.assign(new Error(detail || 'Não foi possível concluir esta ação.'), {status:response.status}); } return response.json(); }
     const send = (url, method, body) => json(url, {method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)});
     function notify() { revision++; onChange(); clearTimeout(saveTimer); if (loaded) saveTimer = setTimeout(() => flush().catch(e => status(e.message)), 700); }
     function paint() {
@@ -66,7 +86,8 @@
       try {
         const [saved, catalog] = await Promise.all([json(`/api/videos/${encodeURIComponent(id)}/layout`),json('/api/layout-presets')]);
         if (generation !== requestGeneration || destroyed) return;
-        config = normalize(saved.layout_config); select.value = saved.layout || 'blur'; presets = catalog.presets || []; custom = catalog.custom_presets || []; candidates = []; revision = 0; persistedRevision = 0; dirtyCoordinates = false; loaded = true; enable(true); frame(); paint(); status(''); onChange();
+        preferredSubtitles = typeof saved.subtitles === 'boolean' ? saved.subtitles : null;
+        config = normalize(saved.layout_config); select.value = saved.layout || 'blur'; presets = catalog.presets || []; custom = catalog.custom_presets || []; candidates = activity.detection(id)?.candidates || []; revision = 0; persistedRevision = 0; dirtyCoordinates = false; loaded = true; enable(true); restoreSubtitles(); frame(); paint(); status(''); onChange();
       } catch (e) { if (generation === requestGeneration && !destroyed) { status(e.message || 'Não foi possível carregar os modelos. Tente novamente.'); throw e; } }
     }
     async function flush() {
@@ -76,7 +97,7 @@
       if ($('.le-error').textContent) throw new Error('Corrija os valores da área selecionada.');
       const target = id;
       while (!destroyed && revision > persistedRevision && target === id) {
-        const version = revision, payload = {layout:select.value, layout_config:clone(config)};
+        const version = revision, payload = {layout:select.value, layout_config:clone(config), subtitles:subtitleSetting()};
         const operation = saveQueue.catch(() => {}).then(() => send(`/api/videos/${encodeURIComponent(target)}/layout`, 'PUT', payload));
         saveQueue = operation;
         await operation;
@@ -101,35 +122,29 @@
       const actionGeneration = requestGeneration, actionId = id;
       const currentAction = () => !destroyed && loaded && actionGeneration === requestGeneration && actionId === id;
       const preset = e.target.closest('[data-preset]');
-      if (preset) { const p = [...presets,...custom].find(x => String(x.id) === preset.dataset.preset); if (!p) return; config = normalize(p.layout_config); select.value = p.layout || 'blur'; if (typeof p.subtitles === 'boolean') onPresetSubtitles(p.subtitles); if (config.mode !== 'standard' && !config.face) { region = 'face'; $('.le-areas').open = true; status('Selecione ou ajuste a área do rosto antes de gerar a prévia.'); } else status(''); paint(); notify(); return; }
+      if (preset) { const p = [...presets,...custom].find(x => String(x.id) === preset.dataset.preset); if (!p) return; config = normalize(p.layout_config); select.value = p.layout || 'blur'; if (typeof p.subtitles === 'boolean') { preferredSubtitles = p.subtitles; restoreSubtitles(); } if (config.mode !== 'standard' && !config.face) { region = 'face'; $('.le-areas').open = true; status('Selecione ou ajuste a área do rosto antes de gerar a prévia.'); } else status(''); paint(); notify(); return; }
       const del = e.target.closest('[data-delete]');
       if (del) { try { await json(`/api/layout-presets/${encodeURIComponent(del.dataset.delete)}`, {method:'DELETE'}); if (!currentAction()) return; custom = custom.filter(p => String(p.id) !== del.dataset.delete); paint(); } catch (error) { if (currentAction()) status(error.message); } return; }
       const which = e.target.closest('[data-region]'); if (which) { region = which.dataset.region; paint(); return; }
       const candidate = e.target.closest('[data-candidate]'); if (candidate) { const c = candidates[Number(candidate.dataset.candidate)]; region = 'face'; config.face = clone(c.region); frame(c.timestamp || 0); paint(); notify(); return; }
       if (e.target.closest('.le-use-frame')) { const at = Number(getTime()); frame(Number.isFinite(at) && at >= 0 ? at : 0); status('Quadro do player selecionado.'); return; }
       if (e.target.closest('.le-reset')) { config[region] = {x:0,y:0,w:1,h:1}; $('.le-error').textContent = ''; paint(); notify(); return; }
-      if (e.target.closest('.le-save')) { const name = $('.le-name').value.trim(); if (!name) { status('Digite um nome para salvar o modelo.'); return; } try { await flush(); if (!currentAction()) return; await send('/api/layout-presets','POST',{name, layout:select.value, layout_config:clone(config), subtitles:getSubtitles()}); if (!currentAction()) return; const catalog = await json('/api/layout-presets'); if (!currentAction()) return; custom = catalog.custom_presets || []; $('.le-name').value = ''; paint(); status('Modelo salvo.'); } catch (error) { if (currentAction()) status(error.message); } return; }
+      if (e.target.closest('.le-save')) { const name = $('.le-name').value.trim(); if (!name) { status('Digite um nome para salvar o modelo.'); return; } try { await flush(); if (!currentAction()) return; await send('/api/layout-presets','POST',{name, layout:select.value, layout_config:clone(config), subtitles:subtitleSetting()}); if (!currentAction()) return; const catalog = await json('/api/layout-presets'); if (!currentAction()) return; custom = catalog.custom_presets || []; $('.le-name').value = ''; paint(); status('Modelo salvo.'); } catch (error) { if (currentAction()) status(error.message); } return; }
       if (e.target.closest('.le-detect')) {
-        if (!id) return;
-        const target = id, generation = requestGeneration, button = $('.le-detect');
-        const current = () => !destroyed && id === target && requestGeneration === generation;
-        button.disabled = true; status('Procurando rostos...');
+        const job = activity.reserve(id, 'detect-faces');
+        if (!job) return;
+        status('Procurando rostos...');
         try {
-          const started = await send(`/api/videos/${encodeURIComponent(target)}/faces`, 'POST', {});
-          let result, polls = 0;
-          while (current()) {
-            const task = await json(`/api/tasks/${encodeURIComponent(started.task_id)}`);
-            if (!current()) return;
-            if (task.status === 'done') { result = task.result; break; }
-            if (['error','failed','interrupted'].includes(task.status)) throw new Error(typeof task.error === 'string' ? task.error : 'Não foi possível procurar rostos.');
-            if (++polls === 120) status('A busca continua em andamento. Você pode ajustar a área manualmente.');
-            await new Promise(resolve => setTimeout(resolve,1000));
-          }
-          if (!current()) return;
+          job.submitted = true;
+          const started = await send(`/api/videos/${encodeURIComponent(id)}/faces`, 'POST', {});
+          const result = await activity.track(job, started.task_id, message => { if (currentAction()) status(message); });
+          if (!currentAction()) return;
           candidates = result?.candidates || []; paint();
           status(candidates.length ? 'Escolha um rosto sugerido ou ajuste a área manualmente.' : 'Nenhum rosto encontrado. Você pode ajustar a área manualmente.');
-        } catch (error) { if (current()) status(`${error.message || 'Não foi possível procurar rostos.'} Ajuste a área manualmente.`); }
-        finally { if (current()) button.disabled = false; }
+        } catch (error) {
+          activity.failure(job,error);
+          if (currentAction()) status(error.message || 'Não foi possível procurar rostos.');
+        } finally { activity.release(job); }
       }
     }, {signal:listeners.signal});
     let drag = null;
@@ -162,7 +177,7 @@
     stage.addEventListener('pointerup',endDrag,{signal:listeners.signal});
     stage.addEventListener('pointercancel',endDrag,{signal:listeners.signal});
     paint();
-    return {load, getConfig:() => clone(config), getLayout:() => select.value, isReady:() => loaded, flush, setVideo:async next => { ++requestGeneration; enable(false); if (id && loaded) await flush(); if (destroyed) return; id = next; loaded = false; $('.le-detect').disabled = false; config=defaults(); candidates=[]; if (id) await load(); }, destroy:() => { destroyed=true; loaded=false; requestGeneration++; clearTimeout(saveTimer); listeners.abort(); select.disabled=false; root.innerHTML=''; }};
+    return {load, subtitlesChanged, restoreSubtitles, getConfig:() => clone(config), getLayout:() => select.value, isReady:() => loaded, flush, setVideo:async next => { ++requestGeneration; enable(false); if (id && loaded) await flush(); if (destroyed) return; id = next; loaded = false; $('.le-detect').disabled = false; config=defaults(); candidates=[]; if (id) await load(); }, destroy:() => { destroyed=true; loaded=false; requestGeneration++; clearTimeout(saveTimer); listeners.abort(); select.disabled=false; root.innerHTML=''; }};
   }
   window.LayoutEditor = {create, normalize, same};
 })();

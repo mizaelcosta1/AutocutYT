@@ -11,6 +11,8 @@
   };
   let styleSaveTimer = null;
   let styleSavePromise = Promise.resolve();
+  const activity = window.VideoActivity;
+  const viewingJob = job => state.currentVideo?.id === job.id;
   let layoutEditor = null;
   let editorGeneration = 0;
 
@@ -66,7 +68,7 @@
         const data = await res.json();
         if (data && data.detail) detail = data.detail;
       } catch (_) {}
-      throw new Error(detail);
+      throw Object.assign(new Error(detail), {status:res.status});
     }
     const ct = res.headers.get("content-type") || "";
     return ct.includes("application/json") ? res.json() : res.text();
@@ -108,7 +110,7 @@
         input.disabled = !cfg.transcribe_available;
         if (!cfg.transcribe_available) input.checked = false;
       });
-      if ($("#btn-transcribe")) $("#btn-transcribe").disabled = !cfg.transcribe_available || state.transcript?.state?.status === "running";
+      if ($("#btn-transcribe")) $("#btn-transcribe").disabled = activity.busy(state.currentVideo?.id) || !cfg.transcribe_available || state.transcript?.state?.status === "running";
       $$(".c-gen-meta").forEach((btn) => { btn.textContent = cfg.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"; });
       const transcribeCheckbox = $("#transcribe");
       const cloudCheckbox = $("#cloud-model");
@@ -332,7 +334,7 @@
               <div class="video-meta">${fmtTime(v.duration)} • ${v.width}x${v.height} • ${fmtBytes(v.size)}</div>
               <div class="btn-row">
                 <button class="primary" onclick="window._openVideoById('${v.id}')">Abrir no editor</button>
-                <button class="danger" onclick="window._deleteVideo('${v.id}')">Excluir</button>
+                <button class="danger" data-delete-video="${v.id}" ${activity.busy(v.id) ? "disabled" : ""} onclick="window._deleteVideo('${v.id}')">Excluir</button>
               </div>
             </div>
           </article>`
@@ -350,7 +352,10 @@
   };
 
   window._deleteVideo = async (id) => {
+    if (activity.busy(id)) return;
     if (!confirm("Excluir este projeto e todos os clipes renderizados do disco?")) return;
+    const job = activity.reserve(id,"edit");
+    if (!job) return;
     try {
       await api(`/api/videos/${id}`, { method: "DELETE" });
       showNotice("Projeto excluido.", "ok");
@@ -368,8 +373,9 @@
       loadLibrary();
       loadConfig();
     } catch (err) {
+      activity.failure(job,err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   };
 
   $("#refresh-library")?.addEventListener("click", loadLibrary);
@@ -420,13 +426,17 @@
   }
 
   function updateClipApprovals(reset = false) {
+    const busy = activity.busy(state.currentVideo?.id);
+    for (const button of $$("#btn-manual,#btn-analyze,.clip-card [data-mutation],.clip-card .c-title,.clip-card .c-start,.clip-card .c-end")) button.disabled = busy;
+    $("#btn-transcribe").disabled = busy || state.config?.transcribe_available === false || state.transcript?.state?.status === "running";
+    activity.paint(state.currentVideo?.id);
     $$(".clip-card").forEach((card) => {
       const clip = state.manifest?.clips.find((item) => item.id === card.dataset.clipId);
       const matching = Boolean(clip?.preview_url) && optionsMatch(clip?.preview_options);
       const approval = card.querySelector(".c-preview-approve");
-      if (approval) { if (reset || !matching) approval.checked = false; approval.disabled = !matching; }
+      if (approval) { if (reset || !matching) approval.checked = false; approval.disabled = busy || !matching; }
       const final = card.querySelector(".c-render-final");
-      if (final) final.disabled = !matching || !approval?.checked;
+      if (final) final.disabled = busy || !matching || !approval?.checked;
       const note = card.querySelector(".c-preview-settings-note");
       if (note) note.classList.toggle("hidden", matching || !clip?.preview_url);
       const publish = card.querySelector(".yt-publish-box");
@@ -464,7 +474,7 @@
         : result.available ? `${result.words.length} palavras transcritas. Revise as legendas na prévia antes de exportar.`
         : result.state?.status === "error" ? `A gravação está salva. ${result.state.message}`
         : result.notice || "Gere legendas a partir do áudio deste vídeo.";
-      $("#btn-transcribe").disabled = result.state?.status === "running" || state.config?.transcribe_available === false;
+      $("#btn-transcribe").disabled = activity.busy(id) || result.state?.status === "running" || state.config?.transcribe_available === false;
       $("#btn-transcribe").textContent = result.available ? "Refazer transcrição" : "Gerar legendas";
       for (const ext of ["srt", "vtt"]) {
         const link = $(`#subtitle-download-${ext}`);
@@ -473,6 +483,7 @@
       }
       $("#burn-subs").disabled = !result.available;
       if (!result.available) $("#burn-subs").checked = false;
+      layoutEditor?.restoreSubtitles();
     } catch (error) {
       if (state.currentVideo?.id === id) $("#subtitle-status").textContent = error.message;
     }
@@ -488,6 +499,7 @@
       }, 350);
     });
   }
+  $("#burn-subs").addEventListener("change", () => layoutEditor?.subtitlesChanged());
   for (const selector of ["#layout", "#burn-subs"]) $(selector)?.addEventListener("change", () => updateClipApprovals(true));
   $("#cloud-model")?.addEventListener("change", () => $("#cloud-approval-line")?.classList.toggle("hidden", !$("#cloud-model").checked));
   $("#cloud-approval-line")?.classList.toggle("hidden", !$("#cloud-model")?.checked);
@@ -495,24 +507,27 @@
   $("#btn-transcribe")?.addEventListener("click", async () => {
     if (!state.currentVideo) return;
     const id = state.currentVideo.id;
+    const job = activity.reserve(state.currentVideo?.id, "transcribe-local");
+    if (!job) return;
     const button = $("#btn-transcribe");
     button.disabled = true;
     button.textContent = "Iniciando transcrição...";
     try {
+      job.submitted = true;
       const started = await api(`/api/videos/${id}/transcript`, { method: "POST", body: "{}" });
-      const result = await pollTask(started.task_id, (message) => {
+      const result = await activity.track(job, started.task_id, (message) => {
         if (state.currentVideo?.id === id) $("#subtitle-status").textContent = message;
       });
       if (state.currentVideo?.id === id) {
         await loadTranscript();
-        $("#burn-subs").checked = Boolean(state.transcript?.available);
         await loadManifest();
       }
-      showNotice(result.notice || "Transcrição concluída. Você já pode baixar ou incluir as legendas no vídeo.", "ok");
-    } catch (error) { showNotice(error.message, "error"); }
+      if (viewingJob(job)) showNotice(result.notice || "Transcrição concluída. Você já pode baixar ou incluir as legendas no vídeo.", "ok");
+    } catch (error) { activity.failure(job, error); showNotice(error.message, "error"); }
     finally {
+      activity.release(job);
       if (state.currentVideo?.id === id) {
-        button.disabled = state.config?.transcribe_available === false;
+        button.disabled = activity.busy(id) || state.config?.transcribe_available === false;
         button.textContent = state.transcript?.available ? "Refazer transcrição" : "Gerar legendas";
       }
     }
@@ -566,6 +581,7 @@
       layoutEditor = null;
     }
     state.currentVideo = video;
+    void activity.refresh(video.id);
     state.manifest = null;
     renderClipsList([]);
     state.transcript = null;
@@ -589,9 +605,12 @@
     if (window.LayoutEditor) {
       layoutEditor = window.LayoutEditor.create({container:"#layout-editor", videoId:video.id, layoutSelect:"#layout",
         onChange:() => updateClipApprovals(true),
-        getSubtitles:() => $("#burn-subs").checked,
+        getSubtitles:() => state.transcript?.available ? $("#burn-subs").checked : null,
         getTime:() => player.currentTime || 0,
-        onPresetSubtitles:(checked) => { $("#burn-subs").checked = checked && Boolean(state.transcript?.available); updateClipApprovals(true); }});
+        onPresetSubtitles:checked => {
+          const input = $("#burn-subs"), next = checked && Boolean(state.transcript?.available);
+          if (input.checked !== next) { input.checked = next; updateClipApprovals(true); }
+        }});
       try { await layoutEditor.load(); }
       catch (error) { showNotice(`Não foi possível carregar o layout: ${error.message}`, "error"); }
     }
@@ -613,6 +632,8 @@
 
   $("#btn-manual")?.addEventListener("click", async () => {
     if (!state.currentVideo) return;
+    const job = activity.reserve(state.currentVideo?.id, "edit");
+    if (!job) return;
     const start = Number(startInput.value);
     const end = Number(endInput.value);
     const title = $("#manual-title").value.trim() || "Momento especial";
@@ -624,13 +645,15 @@
       showNotice("Clipe manual adicionado!", "ok");
       $("#manual-title").value = "";
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   });
 
   $("#btn-analyze")?.addEventListener("click", async () => {
     if (!state.currentVideo) return;
+    const job = activity.reserve(state.currentVideo?.id, "analyze");
+    if (!job) return;
     const btn = $("#btn-analyze");
     btn.disabled = true;
     btn.textContent = "Analisando gravacao...";
@@ -643,18 +666,21 @@
         use_cloud_model: $("#cloud-model").checked,
         cloud_approved: $("#cloud-approved").checked,
       };
+      job.submitted = true;
       const started = await api(`/api/videos/${state.currentVideo.id}/analyze`, {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      await pollTask(started.task_id, (txt) => (btn.textContent = txt));
+      await activity.track(job, started.task_id, txt => { if (viewingJob(job)) btn.textContent = txt; });
+      if (!viewingJob(job)) return;
       showNotice("Analise concluida! Confira os momentos sugeridos abaixo.", "ok");
       await loadTranscript();
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
     } finally {
-      btn.disabled = false;
+      activity.release(job);
+      btn.disabled = activity.busy(state.currentVideo?.id);
       btn.textContent = "Encontrar momentos";
     }
   });
@@ -702,15 +728,15 @@
             ${c.excerpt ? `<div class="clip-excerpt">"${escapeHtml(c.excerpt)}"</div>` : ""}
             <div class="btn-row" style="margin-top:10px">
               <button class="outline" onclick="window._previewJump(${c.start})">&#9654; Ver no player</button>
-              <button class="outline" onclick="window._saveAllClips()">Salvar ajustes</button>
-              <button class="outline c-gen-meta" onclick="window._genMeta('${c.id}')">${state.config?.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"}</button>
-              <button class="primary" onclick="window._renderClip('${c.id}', 'preview')">1. Gerar Previa 720p</button>
+              <button class="outline" data-mutation onclick="window._saveAllClips()">Salvar ajustes</button>
+              <button class="outline c-gen-meta" data-mutation onclick="window._genMeta('${c.id}')">${state.config?.ai_titles_ready ? "Gerar título com IA" : "Sugerir título (sem IA)"}</button>
+              <button class="primary" data-mutation onclick="window._renderClip('${c.id}', 'preview')">1. Gerar Previa 720p</button>
               ${
                 c.preview_url
-                  ? `<label class="checkline"><input type="checkbox" class="c-preview-approve" onchange="window._approveClipPreview('${c.id}')"> Assisti a previa e aprovo esta versao para exportacao final.</label><button class="primary c-render-final" disabled onclick="window._renderClip('${c.id}', 'final')">2. Exportar final 1080p</button>`
+                  ? `<label class="checkline"><input type="checkbox" class="c-preview-approve" onchange="window._approveClipPreview('${c.id}')"> Assisti a previa e aprovo esta versao para exportacao final.</label><button class="primary c-render-final" disabled data-mutation onclick="window._renderClip('${c.id}', 'final')">2. Exportar final 1080p</button>`
                   : ""
               }
-              <button class="danger" onclick="window._deleteClip('${c.id}')">Remover</button>
+              <button class="danger" data-mutation onclick="window._deleteClip('${c.id}')">Remover</button>
             </div>
             <p class="hint c-preview-settings-note hidden">O estilo ou enquadramento mudou. Gere uma nova prévia para revisar essas opções.</p>
             ${
@@ -729,7 +755,7 @@
                       <div style="display:flex;align-items:flex-end">
                         ${c.youtube?.youtube_video_id
                           ? `<span class="hint">Este corte ja foi enviado; edite e exporte outra versao para novo envio.</span>`
-                          : `<button class="primary full" onclick="window._publishYouTube('${c.id}')">Enviar ao YouTube</button>`}
+                          : `<button class="primary full" data-mutation onclick="window._publishYouTube('${c.id}')">Enviar ao YouTube</button>`}
                       </div>
                     </div>
                     <label class="checkline"><input type="checkbox" class="c-yt-approve"> Confirmo que revisei este clipe e autorizo o envio oficial para o meu canal do YouTube.</label>
@@ -764,7 +790,7 @@
     }
   };
 
-  window._saveAllClips = async () => {
+  async function saveClipEdits(job) {
     if (!state.currentVideo || !state.manifest) return false;
     const cards = $$(".clip-card");
     const updated = cards.map((card) => {
@@ -782,26 +808,36 @@
         method: "PUT",
         body: JSON.stringify({ clips: updated }),
       });
+      if (!viewingJob(job)) return false;
       showNotice("Ajustes dos clipes salvos!", "ok");
       await loadManifest();
       return true;
     } catch (err) {
+      activity.failure(job,err);
       showNotice(err.message, "error");
       return false;
     }
   };
 
+  window._saveAllClips = async () => {
+    const job = activity.reserve(state.currentVideo?.id, "edit");
+    if (!job) return false;
+    try { return await saveClipEdits(job); } finally { activity.release(job); }
+  };
+
   window._genMeta = async (clipId) => {
     if (!state.currentVideo) return;
+    const job = activity.reserve(state.currentVideo?.id, "edit");
+    if (!job) return;
     try {
       const meta = await api(`/api/videos/${state.currentVideo.id}/clips/${clipId}/generate-meta`, {
         method: "POST",
       });
       showNotice(`Titulo e descricao gerados (${meta.source})!`, "ok");
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   };
 
   window._approveClipPreview = (clipId) => {
@@ -818,10 +854,10 @@
     if (quality === "final" && !approvedPreview) {
       return showNotice("Assista a previa e marque a aprovacao antes de exportar o final.", "error");
     }
-    // Never render the OLD interval after a failed attempt to save edits.
-    if (!await window._saveAllClips()) return;
-    if (state.currentVideo?.id !== videoId) return;
+    const job = activity.reserve(videoId, "render-" + quality);
+    if (!job) return;
     try {
+      if (!await saveClipEdits(job) || state.currentVideo?.id !== videoId) return;
       await persistSubtitleStyle();
       if (layoutEditor) await layoutEditor.flush();
       if (state.currentVideo?.id !== videoId) return;
@@ -830,6 +866,7 @@
           || (approvedPreviewId && currentClip?.preview_options?.render_id !== approvedPreviewId)))
         throw new Error("O layout ou a prévia mudou. Gere e aprove uma nova prévia antes de exportar.");
       showNotice(`Renderizando ${quality === "preview" ? "previa 720p" : "final 1080p"}...`, "info");
+      job.submitted = true;
       const started = await api(`/api/videos/${videoId}/render/${quality}`, {
         method: "POST",
         body: JSON.stringify({
@@ -843,23 +880,26 @@
           approved_preview_id: quality === "final" ? approvedPreviewId : null,
         }),
       });
-      await pollTask(started.task_id);
+      await activity.track(job, started.task_id);
+      if (!viewingJob(job)) return;
       showNotice(`${quality === "preview" ? "Previa 720p" : "Video final 1080p"} pronto!`, "ok");
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   };
 
   window._deleteClip = async (clipId) => {
     if (!state.currentVideo) return;
+    const job = activity.reserve(state.currentVideo?.id, "edit");
+    if (!job) return;
     try {
       await api(`/api/videos/${state.currentVideo.id}/clips/${clipId}`, { method: "DELETE" });
       showNotice("Clipe removido.", "ok");
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   };
 
   window._publishYouTube = async (clipId) => {
@@ -873,9 +913,12 @@
     const title = card.querySelector(".c-title")?.value.trim() || "";
     const description = card.querySelector(".c-desc")?.value.trim() || "";
     const privacy = card.querySelector(".c-privacy")?.value || "private";
+    const job = activity.reserve(state.currentVideo?.id, "publish-youtube");
+    if (!job) return;
 
     try {
       showNotice("Enviando video aprovado ao YouTube...", "info");
+      job.submitted = true;
       const started = await api(`/api/videos/${state.currentVideo.id}/clips/${clipId}/publish/youtube`, {
         method: "POST",
         body: JSON.stringify({
@@ -885,14 +928,28 @@
           approved_publish: true,
         }),
       });
-      const res = await pollTask(started.task_id);
+      const res = await activity.track(job, started.task_id);
+      if (!viewingJob(job)) return;
       showNotice(`Publicado no YouTube (${res.privacy_status}): ${res.url}`, "ok");
       await loadManifest();
-    } catch (err) {
+    } catch (err) { activity.failure(job, err);
       showNotice(err.message, "error");
-    }
+    } finally { activity.release(job); }
   };
 
+  window.addEventListener("video-activity", ({detail}) => {
+    for (const button of $$("[data-delete-video]")) button.disabled = activity.busy(button.dataset.deleteVideo);
+    if (state.currentVideo?.id === detail.id) updateClipApprovals();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.currentVideo) void activity.refresh(state.currentVideo.id);
+  });
+  window.addEventListener("video-task-restored", async ({detail}) => {
+    if (state.currentVideo?.id !== detail.id) return;
+    if (detail.error) showNotice(detail.error, "error");
+    await loadTranscript();
+    if (state.currentVideo?.id === detail.id) await loadManifest();
+  });
   loadConfig();
   updateSubtitleSample();
   loadLibrary();

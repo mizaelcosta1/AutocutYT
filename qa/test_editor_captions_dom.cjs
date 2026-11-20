@@ -37,6 +37,7 @@ async function fixture() {
     const call = { path: pathname, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : undefined };
     calls.push(call);
     if (pathname === '/api/config') return reply({ transcribe_available: true, ffmpeg: true, streamlink: true, ytdlp: true, storage_free_bytes: 100000 });
+    if (pathname.endsWith('/activity')) return reply({activity:null});
     if (pathname === '/api/videos') return reply({ videos: [video] });
     if (pathname === '/api/lives') return reply({ lives: [] });
     if (pathname.endsWith('/manifest')) return reply({ clips: [data.clip], transcription_engine: 'fixture' });
@@ -54,6 +55,7 @@ async function fixture() {
     if (pathname === '/api/tasks/transcribe') return reply({ status: 'done', result: { words: data.words.length } });
     throw new Error(`Unexpected request ${call.method} ${pathname}`);
   };
+  win.eval(fs.readFileSync(path.join(repo, 'static/video-activity.js'), 'utf8'));
   win.eval(fs.readFileSync(path.join(repo, 'static/app.js'), 'utf8'));
   await until(() => calls.some((c) => c.path === '/api/lives'));
   const $ = (selector) => win.document.querySelector(selector);

@@ -1,4 +1,19 @@
-# AutoClips AI Studio 0.7.5 — layouts de cortes e localização de rosto
+# AutoClips AI Studio 0.7.6 — edição, progresso e exportação revisados
+
+## Correções da versão 0.7.6
+
+- Os controles de edição, renderização e detecção compartilham a atividade do vídeo. O primeiro clique reserva a operação antes de salvar as opções; recarregar retoma o acompanhamento pelo servidor.
+- A opção **Incluir legendas no vídeo** conserva as escolhas de ativar e desativar, junto do layout. Fonte, tamanho e cor continuam salvos por vídeo.
+- Uma transcrição interrompida por reinício permite nova tentativa e preserva as palavras já gravadas.
+- A exportação verifica espaço antes de entrar na fila e antes de executar. A estimativa considera duração, qualidade, áudio e as cópias necessárias à montagem. O tamanho real varia com o conteúdo e a compressão.
+- Os MP4s são publicados somente depois das verificações. Uma falha remove os arquivos temporários da tentativa e preserva a exportação anterior.
+- Os controles do player ficam dentro da área visível. A timeline e a transcrição aparecem logo abaixo do vídeo, ao lado das opções de exportação em telas largas.
+
+Se um pedido perder a resposta, **Atualizar atividade** consulta o servidor sem reenviar a operação. Quando o resultado continua incerto, confira os arquivos antes de liberar novas ações.
+
+Detalhes da validação e limitações: [qa/QA_v0.7.6.md](qa/QA_v0.7.6.md).
+
+## Formatos introduzidos na versão 0.7.5
 
 Os vídeos da biblioteca agora têm um painel **Formato e composição**, compartilhado com a montagem de trechos. Escolha um dos oito modelos, ajuste o rosto e a área do jogo e salve seus próprios modelos para reutilizar.
 

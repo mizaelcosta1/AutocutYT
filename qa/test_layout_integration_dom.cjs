@@ -41,6 +41,7 @@ function fixture(t, page = 'index', intercept = () => undefined) {
       stream_url:'/api/videos/'+id+'/stream'}))});
     if (path === '/api/lives') return reply({lives:[]});
     if (path === '/api/layout-presets') return reply({presets:[], custom_presets:[]});
+    if (path.endsWith('/activity')) return reply({activity:null});
     if (path.endsWith('/layout')) {
       if (method === 'PUT') layouts.set(id, body);
       return reply(layouts.get(id) || {layout:'fit', layout_config:{mode:'standard'}});
@@ -66,7 +67,7 @@ function fixture(t, page = 'index', intercept = () => undefined) {
     if (path === '/api/tasks/render') return reply({status:'done',result:{}});
     throw new Error('Unexpected '+path);
   };
-  for (const file of ['layout-editor.js',timeline ? 'timeline.js' : 'app.js'])
+  for (const file of ['video-activity.js','layout-editor.js',timeline ? 'timeline.js' : 'app.js'])
     w.eval(fs.readFileSync(path.join(dir,file), 'utf8'));
   function change(selector,value) {
     const element=$(selector);
@@ -133,4 +134,165 @@ test('failed layout load does not trap the next video in the previous editor', a
   await sleep(20);
   await f.open(B);
   assert.equal(f.$('.c-title').value,'b clip');
+});
+
+function deferred() {
+  let resolve;
+  const promise=new Promise(done=>{resolve=done;});
+  return {promise,resolve};
+}
+
+test('two clip preview clicks before the first save submit one render and block other video operations', async t => {
+  const save=deferred(), poll=deferred();
+  const f=fixture(t,'index',call=>{
+    if (call.path.endsWith('/clips') && call.method==='PUT') return save.promise.then(()=>reply({}));
+    if (call.path==='/api/tasks/render') return poll.promise.then(()=>reply({status:'done',result:{}}));
+  });
+  await f.open(A);
+  const one=f.w._renderClip('clip_01','preview'), two=f.w._renderClip('clip_01','preview');
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/clips') && c.method==='PUT').length,1);
+  save.resolve();
+  await until(()=>f.calls.some(c=>c.path==='/api/tasks/render'));
+  // Saving re-fetches the manifest and replaces the original buttons.
+  assert.equal(f.$('button[onclick*="_renderClip"]').disabled,true);
+  f.$('#btn-transcribe').click(); f.$('#btn-analyze').click(); f.$('#btn-manual').click();
+  await f.w._saveAllClips(); await f.w._deleteClip('clip_01');
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/render/preview')).length,1);
+  assert.equal(f.calls.filter(c=>c.method==='DELETE' || c.method==='POST' && !c.path.endsWith('/render/preview')).length,0);
+  assert.equal(f.$('#editor-player').controls,true);
+  assert.equal(f.$('#video-activity').hidden,false);
+  poll.resolve(); await Promise.all([one,two]);
+  assert.equal(f.$('#video-activity').hidden,true);
+  assert.equal(f.$('button[onclick*="_renderClip"]').disabled,false);
+  assert.equal(f.$('.c-preview-approve').checked,false);
+});
+
+test('resumed render blocks detection and editing, keeps player available and refreshes exports after completion', async t => {
+  const poll=deferred(); let active=true;
+  const f=fixture(t,'timeline',call=>{
+    if (call.path.endsWith('/layout')) return reply({layout:'fit',layout_config:{mode:'pip',face:{x:0,y:0,w:.5,h:.5}}});
+    if (call.path.endsWith('/activity')) return reply({activity:active ? {task_id:'busy',kind:'render-preview',status:'running'} : null});
+    if (call.path==='/api/tasks/busy') return poll.promise.then(()=>reply({status:'done',result:{}}));
+  });
+  await until(()=>f.calls.some(c=>c.path.endsWith('/timeline/exports')));
+  f.change('#approve-selection',true);
+  assert.equal(f.$('#render-preview').disabled,true);
+  assert.equal(f.$('#save-trim').disabled,true);
+  assert.equal(f.$('.le-detect').matches(':disabled'),true);
+  f.$('.le-detect').click(); f.$('#render-preview').click(); f.$('#save-trim').click();
+  assert.equal(f.calls.filter(c=>c.method==='POST').length,0);
+  assert.equal(f.$('#play-edit').disabled,false);
+  const firstCount=f.calls.filter(c=>c.path.endsWith('/timeline/exports')).length;
+  active=false; poll.resolve();
+  await until(()=>f.calls.filter(c=>c.path.endsWith('/timeline/exports')).length>firstCount);
+  assert.equal(f.$('#video-activity').hidden,true);
+  assert.equal(f.$('#render-preview').disabled,false);
+});
+
+test('an unreadable activity status offers a retry and never claims a completed render', async t => {
+  let offline=true;
+  const f=fixture(t,'timeline',call=>{
+    if (call.path.endsWith('/activity')) return offline ? reply({},503) : reply({activity:null});
+  });
+  await until(()=>f.calls.some(c=>c.path.endsWith('/timeline/exports')));
+  f.change('#approve-selection',true);
+  assert.equal(f.$('#render-preview').disabled,true);
+  assert.equal(f.$('#video-activity button').hidden,false);
+  assert.match(f.$('#video-activity').textContent,/Não foi possível confirmar/);
+  offline=false;
+  f.$('#video-activity button').click();
+  await until(()=>!f.$('#render-preview').disabled);
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/activity')).length,2);
+  assert.equal(f.calls.filter(c=>c.path.includes('/render/')).length,0);
+});
+
+test('terminal first task leaves the controls locked for a second task on the same video', async t => {
+  const first=deferred(), second=deferred(); let current='one';
+  const f=fixture(t,'timeline',c=>{
+    if (c.path.endsWith('/activity')) return reply({activity:current && {kind:'publish-youtube',task_id:current,status:'running'}});
+    if (c.path==='/api/tasks/one') return first.promise.then(()=>reply({status:'done',result:{}}));
+    if (c.path==='/api/tasks/two') return second.promise.then(()=>reply({status:'error',error:'Falhou a segunda tarefa simulada.'}));
+  });
+  await until(()=>f.calls.some(c=>c.path.endsWith('/timeline/exports')));
+  f.change('#approve-selection',true);
+  current='two'; first.resolve();
+  await until(()=>f.calls.some(c=>c.path==='/api/tasks/two'));
+  assert.equal(f.$('#render-preview').disabled,true);
+  assert.equal(f.$('#video-activity').hidden,false);
+  current=null; second.resolve();
+  await until(()=>!f.$('#render-preview').disabled);
+  assert.match(f.$('#notice').textContent,/Falhou a segunda tarefa simulada/);
+  assert.equal(f.calls.some(c=>c.method==='POST'),false);
+});
+
+test('lost render POST reply requires a deliberate status check without sending a second request', async t => {
+  const f=fixture(t,'index',c=>{
+    if (c.path.endsWith('/render/preview')) return Promise.reject(new TypeError('lost response'));
+  });
+  await f.open(A);
+  await f.w._renderClip('clip_01','preview');
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/activity')).length,1,'no automatic idle read after an ambiguous POST');
+  assert.equal(f.$('button[onclick*="_renderClip"]').disabled,true);
+  assert.match(f.$('#video-activity').textContent,/pedido pode ter chegado/);
+  f.$('#video-activity button').click();
+  await until(()=>f.$('#video-activity button').textContent.includes('Liberar'));
+  assert.equal(f.$('button[onclick*="_renderClip"]').disabled,true);
+  f.$('#video-activity button').click();
+  await until(()=>f.$('#video-activity').hidden);
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/render/preview')).length,1);
+});
+
+for (const page of ['index','timeline']) test(page+': explicit caption choice survives a new page', async t=>{
+  let saved={layout:'fit',layout_config:{mode:'standard'},subtitles:null};
+  let speech=true;
+  const backend=c=>{
+    if (c.path.endsWith('/transcript')) return reply({available:speech,words:speech?[{start:0,end:1,text:'fala'}]:[],state:{},subtitle_style:style});
+    if (c.path.endsWith('/layout')) { if(c.method==='PUT') saved=c.body; return reply(saved); }
+  };
+  const selector=page==='index'?'#burn-subs':'#export-subtitles';
+  async function visit() {
+    const f=fixture(t,page,backend);
+    if(page==='index') await f.open(A); else await until(()=>f.calls.some(c=>c.path.endsWith('/timeline/exports')));
+    return f;
+  }
+  const original=await visit();
+  original.change(selector,true);
+  await until(()=>saved.subtitles===true);
+  const reloaded=await visit(); assert.equal(reloaded.$(selector).checked,true);
+  // A video without words cannot burn captions. An unrelated change must
+  // preserve the earlier choice so it can apply once the transcript returns.
+  speech=false;
+  const silent=await visit(); assert.equal(silent.$(selector).checked,false);
+  assert.equal(silent.$(selector).disabled,true);
+  silent.change('[data-field=aspect]','16:9');
+  await until(()=>saved.layout_config.aspect==='16:9');
+  assert.equal(saved.subtitles,true);
+  speech=true;
+  reloaded.change(selector,false);
+  await until(()=>saved.subtitles===false);
+  const reopened=await visit(); assert.equal(reopened.$(selector).checked,false);
+});
+
+test('storage preflight 507 creates no task and a shorter selection can be submitted immediately', async t => {
+  let rejectForSpace=true;
+  const f=fixture(t,'index',c=>{
+    if (rejectForSpace && c.path.endsWith('/render/preview'))
+      return reply({detail:'Espaço insuficiente. Selecione um corte menor.'},507);
+  });
+  await f.open(A);
+  await f.w._renderClip('clip_01','preview');
+  assert.match(f.$('#notice').textContent,/Espaço insuficiente/);
+  assert.equal(f.$('#video-activity').hidden,true);
+  assert.equal(f.$('button[onclick*="_renderClip"]').disabled,false);
+  assert.equal(f.calls.filter(c=>c.path.startsWith('/api/tasks/')).length,0);
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/activity')).length,1);
+  assert.equal(f.w.sessionStorage.getItem('autoclips.pending-submit.'+A),null);
+
+  rejectForSpace=false;
+  f.$('.c-end').value='1';
+  await f.w._renderClip('clip_01','preview');
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/clips') && c.method==='PUT').at(-1).body.clips[0].end,1);
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/render/preview')).length,2);
+  assert.equal(f.calls.filter(c=>c.path.startsWith('/api/tasks/')).length,1);
+  assert.equal(f.$('.c-preview-approve').checked,false);
 });

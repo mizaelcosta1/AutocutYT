@@ -11,6 +11,7 @@ function fixture(page) {
  const options={mode:'split_caption',aspect:'9:16',face:null,gameplay:null,split_ratio:.34,pip_position:'top-right',pip_scale:.28,game_fit:'contain',caption_position:'middle'};
  const reply=body=>({ok:true,json:async()=>body});
  w.fetch=async(url,opts={})=>{calls.push({url,opts}); if(url==='/api/layout-presets') return reply({presets:[{id:'talk',name:'Rosto e jogo',layout:'fit',layout_config:options,subtitles:true}],custom_presets:[]}); if(url.endsWith('/layout') && opts.method==='PUT') return reply({ok:true}); if(url.endsWith('/layout')) return reply({layout:'blur',layout_config:{...options,mode:'standard'}}); throw new Error(url);};
+ w.eval(fs.readFileSync(path.join(repo,'static/video-activity.js'),'utf8'));
  w.eval(fs.readFileSync(path.join(repo,'static/layout-editor.js'),'utf8'));
  const editor=w.LayoutEditor.create({container:'#layout-editor',videoId:'abc',layoutSelect:page==='index.html'?'#layout':'#export-layout',onChange:()=>changes.push(1),onPresetSubtitles:v=>subtitle.push(v)});
  return {w,editor,calls,changes,subtitle,options,$:s=>w.document.querySelector(s),close:()=>w.close()};

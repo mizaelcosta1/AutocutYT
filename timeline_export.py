@@ -21,8 +21,13 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
     config = normalize_layout_config(layout_config)
     require_face(config)
     expected_width, expected_height = output_dimensions(quality, config["aspect"])
-    source = Path(source)
+    source = Path(source).resolve()
     destination = Path(destination)
+    if destination.is_symlink():
+        raise ValueError("O destino da exportação não pode ser um link simbólico.")
+    destination = destination.resolve()
+    if source == destination:
+        raise ValueError("A exportação não pode substituir o vídeo original.")
     if not source.exists() or sha256_file(source) != document["source_sha256"]:
         raise ValueError("O video original foi alterado; recrie o projeto")
     info = probe(source)
@@ -35,6 +40,9 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
     subtitle_style = normalize_subtitle_style(subtitle_style)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    # Parts, generated captions and the joined candidate belong exclusively to
+    # this attempt. Cleanup never touches a previous destination; publication
+    # happens only after metadata, complete decode and source-hash validation.
     with tempfile.TemporaryDirectory(prefix="autoclips-parts-", dir=str(destination.parent)) as temp_name:
         temp = Path(temp_name)
         parts = []
