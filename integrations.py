@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 import hashlib
+from html import escape
 import ipaddress
 import json
 import os
@@ -20,13 +21,14 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import httpx
 from pydantic import BaseModel, Field
 
 from ai_catalog import (OPENROUTER_FREE_ROUTER, PROVIDER_PRESETS, normalize_models,
                         public_catalog)
 from ai_runtime import ModelRequestError, chat_completion
+import studio_auth
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 SOCIAL = {
@@ -443,6 +445,38 @@ def _social_settings(provider: str) -> tuple[dict, str, str]:
     return conf, client_id, secret
 
 
+def _oauth_studio_owner(request: Request) -> str:
+    """Bind a connection attempt to the signed-in Studio user, not just a tab."""
+    if studio_auth.configured():
+        session = studio_auth.read_session(request)
+        if not session:
+            raise HTTPException(401, "Entre novamente no AutoClips antes de conectar uma conta.")
+        return studio_auth.storage_owner(session["email"])
+    address = request.client.host if request.client else ""
+    if address in {"127.0.0.1", "::1", "testclient", "localhost"}:
+        return "local"
+    raise HTTPException(503, "Configure o login Google do AutoClips antes de conectar uma conta.")
+
+
+def _social_oauth_error(request: Request, message: str, status: int, *, provider: str = "", clear_cookie=False):
+    """Human-readable OAuth failures without reflecting codes or provider payloads."""
+    if "text/html" in request.headers.get("accept", ""):
+        content = '''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Conectar conta | AutoClips</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#101014;color:#f7f7fb;font:16px system-ui,sans-serif}main{width:min(480px,100%);padding:32px;border:1px solid #3c3c46;border-radius:20px;background:#1a1a20}h1{font-size:26px;line-height:1.2}p{line-height:1.65;color:#c6c6d0}a{display:inline-block;margin-top:12px;padding:14px 18px;background:#ff6b6b;color:#1b1010;border-radius:12px;font-weight:700;text-decoration:none}a:focus-visible{outline:3px solid #42d5e7;outline-offset:4px}</style></head><body><main>
+<p>CONEXÕES · AUTOCLIPS</p><h1>Conexão não concluída</h1><p>''' + escape(message) + '''</p>
+<a href="/#connections">Voltar às conexões</a></main></body></html>'''
+        response = HTMLResponse(content, status_code=status)
+    else:
+        response = JSONResponse({"detail": message}, status_code=status)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if clear_cookie and provider in SOCIAL:
+        response.delete_cookie("autoclips_oauth_" + provider, path="/auth/" + provider,
+                               secure=request.url.scheme == "https", httponly=True, samesite="lax")
+    return response
+
+
 def _exchange_code(provider: str, code: str, verifier: str, redirect_uri: str) -> dict:
     conf, client_id, secret = _social_settings(provider)
     data = {"client_id": client_id, "client_secret": secret, "code": code,
@@ -851,11 +885,14 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/auth/{provider}/start")
     def auth_start(provider: str, request: Request, permission: Literal["view", "publish"] = "view"):
-        conf, client_id, _ = _social_settings(provider)
         try:
+            conf, client_id, _ = _social_settings(provider)
+            owner = _oauth_studio_owner(request)
             redirect_uri = _public_url(request) + "/auth/" + provider + "/callback"
+        except HTTPException as exc:
+            return _social_oauth_error(request, str(exc.detail), exc.status_code)
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            return _social_oauth_error(request, str(exc), 400)
         csrf = secrets.token_urlsafe(32)
         browser_nonce = secrets.token_urlsafe(32)
         params = {"client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
@@ -875,41 +912,60 @@ def build_router(vault: Vault) -> APIRouter:
             now = time.time()
             state["pending"] = {k: v for k, v in state.get("pending", {}).items() if v.get("expires", 0) > now}
             state["pending"][csrf] = {"provider": provider, "redirect": redirect_uri, "expires": now + 600, "verifier": verifier,
-                                      "nonce_hash": hashlib.sha256(browser_nonce.encode()).hexdigest(), "requested_scopes": extra_scopes}
+                                      "nonce_hash": hashlib.sha256(browser_nonce.encode()).hexdigest(), "requested_scopes": extra_scopes,
+                                      "studio_owner": owner}
             vault.save(state)
         response = RedirectResponse(conf["authorize"] + "?" + urlencode(params), status_code=302)
         response.set_cookie("autoclips_oauth_" + provider, browser_nonce, httponly=True,
                             secure=redirect_uri.startswith("https://"), samesite="lax", path="/auth/" + provider, max_age=600)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
     @router.get("/auth/{provider}/callback")
     def auth_callback(provider: str, request: Request, code: str = "", state: str = "", error: str = ""):
         if provider not in SOCIAL:
             raise HTTPException(404, "Rede nao reconhecida")
-        if error:
-            return HTMLResponse("<h1>Autorizacao cancelada</h1><p>Volte ao AutoClips para tentar novamente.</p>", status_code=400)
+        try:
+            owner = _oauth_studio_owner(request)
+        except HTTPException as exc:
+            return _social_oauth_error(request, str(exc.detail), exc.status_code)
+        if not state or len(state) > 256 or not state.isascii():
+            return _social_oauth_error(request, "Autorizacao expirada, invalida ou ja utilizada", 400)
+        nonce = request.cookies.get("autoclips_oauth_" + provider, "")
         with vault.lock:
             data = vault.read()
-            pending = data.get("pending", {}).pop(state, None)
+            pending = data.get("pending", {}).get(state)
+            valid_nonce = (pending is not None and nonce and
+                           secrets.compare_digest(pending.get("nonce_hash", ""), hashlib.sha256(nonce.encode()).hexdigest()))
+            if (not pending or not valid_nonce or pending.get("provider") != provider
+                    or pending.get("expires", 0) < time.time()):
+                return _social_oauth_error(request, "Autorizacao expirada, invalida ou ja utilizada", 400)
+            if pending.get("studio_owner") != owner:
+                return _social_oauth_error(request, "Conclua a conexão com a mesma conta usada para iniciá-la no AutoClips.", 403)
+            # Only a validated browser and Studio user may consume this attempt.
+            # Denials and failures are one-use too; start again from Connections.
+            data["pending"].pop(state)
             vault.save(data)
-        nonce = request.cookies.get("autoclips_oauth_" + provider, "")
-        valid_nonce = (pending is not None and nonce and
-                       secrets.compare_digest(pending.get("nonce_hash", ""), hashlib.sha256(nonce.encode()).hexdigest()))
-        if not pending or not valid_nonce or pending.get("provider") != provider or pending.get("expires", 0) < time.time() or not code:
-            raise HTTPException(400, "Autorizacao expirada, invalida ou ja utilizada")
+        def failed(message, status):
+            return _social_oauth_error(request, message, status, provider=provider, clear_cookie=True)
+        if error:
+            return failed("Você cancelou a autorização. Sua conexão anterior foi preservada. Volte às conexões para tentar novamente.", 400)
+        if not code:
+            return failed("Autorizacao expirada, invalida ou ja utilizada", 400)
         try:
             payload = _exchange_code(provider, code, pending.get("verifier", ""), pending["redirect"])
             client_id = os.getenv(SOCIAL[provider]["env_id"], "")
             identity = _identity(provider, payload["access_token"], client_id)
-        except (ValueError, httpx.HTTPError) as exc:
-            raise HTTPException(502, "Nao foi possivel finalizar a autorizacao oficial: " + str(exc)[:150]) from exc
+        except (ValueError, KeyError, httpx.HTTPError):
+            return failed("Não foi possível finalizar a autorização oficial. Verifique a configuração da plataforma e tente conectar novamente.", 502)
         if provider == "youtube" and not payload.get("scope"):
-            raise HTTPException(502, "O Google nao confirmou as permissoes concedidas. Reconecte o canal.")
+            return failed("O Google nao confirmou as permissoes concedidas. Reconecte o canal.", 502)
         actual_scopes = set(str(payload.get("scope") or pending.get("requested_scopes", "")).split())
         if provider == "youtube":
             required = set(str(pending.get("requested_scopes", "")).split())
             if not required.issubset(actual_scopes):
-                raise HTTPException(403, "O Google nao concedeu as permissoes solicitadas. Tente novamente.")
+                return failed("O Google nao concedeu as permissoes solicitadas. Tente novamente.", 403)
         with vault.lock:
             data = vault.read()
             previous = data.get("social", {}).get(provider, {})
@@ -921,7 +977,10 @@ def build_router(vault: Vault) -> APIRouter:
             }
             vault.save(data)
         response = RedirectResponse("/?connected=" + provider + "#connections", status_code=303)
-        response.delete_cookie("autoclips_oauth_" + provider, path="/auth/" + provider)
+        response.delete_cookie("autoclips_oauth_" + provider, path="/auth/" + provider,
+                               secure=request.url.scheme == "https", httponly=True, samesite="lax")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
     @router.post("/api/social/{provider}/disconnect")

@@ -441,6 +441,7 @@
     sample.style.fontFamily = `"${style.font_family}", sans-serif`;
     sample.style.color = style.color;
     sample.style.fontSize = `${Math.max(9, Math.min(48, style.font_size / 2 || 28))}px`;
+    layoutEditor?.refreshPreview();
   }
 
   function optionsMatch(options) {
@@ -634,7 +635,10 @@
       layoutEditor = window.LayoutEditor.create({container:"#layout-editor", videoId:video.id, layoutSelect:"#layout",
         onChange:() => updateClipApprovals(true),
         getSubtitles:() => state.transcript?.available ? $("#burn-subs").checked : null,
+        getSubtitleStyle:subtitleStyle,
+        getSubtitleText:at => (state.transcript?.words || []).filter(word => word.end > at && word.start < at + 1).slice(0,3).map(word => word.text).join(' '),
         getTime:() => player.currentTime || 0,
+        getDuration:() => state.currentVideo?.duration || player.duration,
         onPresetSubtitles:checked => {
           const input = $("#burn-subs"), next = checked && Boolean(state.transcript?.available);
           if (input.checked !== next) { input.checked = next; updateClipApprovals(true); }

@@ -53,7 +53,7 @@ async function fixture(options = {}) {
       const result = options.intercept(call, { state, list, reply });
       if (result !== undefined) return await result;
     }
-    if (call.pathname === '/api/social/accounts') return reply({ networks: [] });
+    if (call.pathname === '/api/social/accounts') return reply({ networks: options.networks || [] });
     if (call.pathname === '/api/creative/workflows') return reply({ workflows: [] });
     if (call.pathname === '/api/ai/catalog') return reply({ source: { url: 'https://github.com/open-free-llm-api/awesome-freellm-apis' }, notice: 'Cada provedor tem suas cotas. Use sua própria chave.', providers: [{ id: 'groq', name: 'Groq', kind: 'custom', endpoint: 'https://api.groq.com/openai/v1', key_url: 'https://console.groq.com/keys', price_note: 'Plano gratuito sujeito às condições da conta.', quota_note: 'Os limites dependem do modelo.' }] });
     if (call.pathname === '/api/ai/providers' && call.method === 'GET') return reply({ providers: state.providers, selected: state.selected, stages: { moments: 'Melhores momentos', titles: 'Títulos e descrições' } });
@@ -195,4 +195,45 @@ test('no matching free model disables saving and explains the empty result', asy
   assert.equal(f.$('#save-model').disabled, true);
   assert.match(f.$('#model-count').textContent, /Preço não informado não é classificado como gratuito/);
   assert.deepEqual(f.errors, []);
+});
+
+test('YouTube connection separates sign-in, channel access and upload consent', async (t) => {
+  const f = await fixture({ networks: [{ id: 'youtube', name: 'YouTube', configured: true, connected: true, can_upload: false, account: { id: 'UC_example', name: 'Canal de teste' } }] }); t.after(() => f.close());
+  const card = f.$('[data-social-provider="youtube"]');
+  assert.match(card.textContent, /Canal conectado para consulta/);
+  assert.equal(card.querySelector('a').getAttribute('href'), '/auth/youtube/start?permission=publish');
+  assert.match(f.$('#connections').textContent, /Sua entrada com Google dá acesso ao estúdio/);
+  assert.equal(card.querySelector('input[type="password"]'), null);
+});
+
+test('real channel verification prevents duplicate calls and shows escaped inline evidence', async (t) => {
+  const pending = deferred();
+  const f = await fixture({ networks: [{ id: 'youtube', name: 'YouTube', configured: true, connected: true, can_upload: true, account: { id: 'UC_example', name: 'Canal' } }], intercept(call) { if (call.pathname === '/api/social/youtube/channel') return pending.promise; } }); t.after(() => f.close());
+  const first = f.win._verifyYouTube();
+  const second = f.win._verifyYouTube();
+  assert.equal(f.$('[data-verify-youtube]').disabled, true);
+  assert.equal(f.calls.filter(c => c.pathname === '/api/social/youtube/channel').length, 1);
+  pending.resolve(reply({ channel: { id: 'UC_example', name: '<img src=x onerror=alert(1)>' }, can_upload: true }));
+  await Promise.all([first, second]);
+  assert.match(f.$('#social-feedback').textContent, /Canal verificado: <img/);
+  assert.match(f.$('#social-feedback').textContent, /Pronto para receber/);
+  assert.equal(f.$('#social-feedback img'), null);
+  assert.equal(f.$('[data-verify-youtube]').disabled, false);
+  assert.deepEqual(f.errors, []);
+});
+
+test('a rejected channel verification stays unverified and can be retried', async (t) => {
+  const f = await fixture({ networks: [{ id: 'youtube', name: 'YouTube', configured: true, connected: true, can_upload: true, account: { id: 'UC_example', name: 'Canal' } }], intercept(call) { if (call.pathname === '/api/social/youtube/channel') return reply({ detail: 'A conexão expirou. Conecte novamente o canal.' }, 401); } }); t.after(() => f.close());
+  await f.win._verifyYouTube();
+  assert.equal(f.$('#social-feedback').classList.contains('is-error'), true);
+  assert.match(f.$('#social-feedback').textContent, /Conecte novamente/);
+  assert.doesNotMatch(f.$('#social-feedback').textContent, /Canal verificado/);
+  assert.equal(f.$('[data-verify-youtube]').disabled, false);
+});
+
+test('unconfigured social connection does not expose a broken OAuth button', async (t) => {
+  const f = await fixture({ networks: [{ id: 'youtube', name: 'YouTube', configured: false, connected: false }] }); t.after(() => f.close());
+  const card = f.$('[data-social-provider="youtube"]');
+  assert.match(card.textContent, /NÃO CONFIGURADO/);
+  assert.equal(card.querySelector('a'), null);
 });

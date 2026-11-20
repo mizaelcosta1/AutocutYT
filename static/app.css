@@ -617,6 +617,7 @@ input:not([type]) { width: 100%; min-width: 0; box-sizing: border-box; backgroun
 .free-model-info b { color: #dbeafe; font-size: 0.95rem; }
 .free-model-info p { margin: 6px 0 0; color: #b6c7dc; font-size: 0.85rem; line-height: 1.6; }
 .connection-feedback { padding: 11px 14px; background: #101e2a; border: 1px solid #2e445d; border-radius: 10px; font-size: 0.85rem; line-height: 1.55; overflow-wrap: anywhere; }
+.connection-feedback.is-error { color: #ffb8c0; border-color: #aa5363; }
 .preset-details { margin: 10px 0 12px; border-left: 2px solid #38bacb; padding: 0 0 0 12px; }
 .preset-details .hint { margin: 5px 0; }
 .connected-provider .pane-top { align-items: flex-start; }

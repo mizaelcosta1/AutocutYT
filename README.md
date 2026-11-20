@@ -1,10 +1,18 @@
-# AutoClips AI Studio 0.8.0 — início do editor visual intuitivo
+# AutoClips AI Studio 0.8.1 — Google, composição visual e YouTube
 
 ## Editor visual organizado
 
-Esta versão inicia a evolução do editor conforme `qa/QA_v0.8.0.md`: paleta preto/coral/branco, navegação contextual em Modelos, Composição e Rosto e jogo, e galeria de modelos em modal. A seleção de rosto/jogo continua editando regiões da gravação original; os quadros de saída independentes, camadas e edição de títulos/legendas no canvas entram nas próximas fases.
+O editor organiza os ajustes em **Modelos**, **Composição** e **Rosto e jogo**, com oito modelos e opções pessoais reutilizáveis. A **Prévia do quadro** usa a imagem real do vídeo e acompanha formato vertical/horizontal, facecam sobre gameplay, faixa de legenda central, tela dividida, tela cheia e picture in picture. Atualize o quadro usando a posição do player. Alterar modelo, áreas, proporção, fonte, tamanho ou cor atualiza a composição sem iniciar uma renderização.
 
-## Downloads e envios dos cortes
+A seleção de rosto e gameplay edita regiões da gravação original; trocar um modelo pronto preserva essas regiões. A prévia do quadro é uma aproximação visual, com amostra de legenda: o vídeo com movimento, áudio e tipografia final deve ser conferido em **Gerar prévia 720p** e aprovado antes de **Exportar final 1080p**. Camadas livres, títulos animados e editor de keyframes não fazem parte desta versão.
+
+## Entrar e conectar o canal
+
+**Entrar com Google** abre a autenticação oficial com PKCE, state, nonce e sessão protegida. O usuário não informa chaves de API para acessar o estúdio. Um link de projeto aberto antes do login é preservado, e cancelamento/expiração/conta não autorizada mostram uma tela de recuperação.
+
+Depois de entrar, use **Conexões e modelos → YouTube** para conectar o canal e autorizar o envio. **Verificar canal** consulta a API oficial e mostra o canal de destino na própria tela. Login e autorização do canal são etapas distintas. Cada envio exige a confirmação do clipe e começa com privacidade **Privado**. As tentativas de conexão ficam vinculadas à conta do estúdio que as iniciou.
+
+Validação desta versão: **397 testes de backend aprovados, 3 testes opcionais ignorados e 101 testes DOM aprovados**. O teste com conta real depende da confirmação de identidade e das permissões na tela do Google; esses testes automatizados não comprovam autorização ou upload real. Detalhes e limites em [qa/QA_v0.8.1.md](qa/QA_v0.8.1.md).
 
 ## Downloads e envios dos cortes
 

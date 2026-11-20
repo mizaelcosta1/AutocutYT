@@ -36,29 +36,42 @@
     }
   }
 
+  function socialFeedback(message, isError = false) {
+    const el = $("#social-feedback");
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove("hidden");
+    el.classList.toggle("is-error", isError);
+  }
+
+  let socialRequest = 0;
+  let verifyingYouTube = false;
+
   async function loadSocialAccounts() {
     const grid = $("#social-grid");
     if (!grid) return;
+    const request = ++socialRequest;
     try {
       const data = await api("/api/social/accounts");
+      if (request !== socialRequest) return;
       grid.innerHTML = (data.networks || [])
         .map((n) => {
           const isYt = n.id === "youtube";
           let actions = "";
           if (!n.configured) {
-            actions = `<span class="hint">Defina as variaveis de ambiente do aplicativo no servidor para habilitar.</span>`;
+            actions = `<span class="hint">Integração ainda não configurada pelo administrador.</span>`;
           } else if (!n.connected) {
             actions = `<a class="primary" style="display:inline-block;text-decoration:none" href="/auth/${n.id}/start?permission=view">Conectar conta ${esc(n.name)}</a>`;
           } else {
             actions = `<div class="btn-row">
               ${
                 isYt && !n.can_upload
-                  ? `<a class="primary" style="text-decoration:none" href="/auth/youtube/start?permission=publish">Ativar publicacao no YouTube</a>`
+                  ? `<a class="primary" style="text-decoration:none" href="/auth/youtube/start?permission=publish">Autorizar envio ao YouTube</a>`
                   : ""
               }
               ${
                 isYt
-                  ? `<button class="outline" type="button" onclick="window._verifyYouTube()">Verificar canal</button>`
+                  ? `<button class="outline" data-verify-youtube type="button" ${verifyingYouTube ? 'disabled aria-busy="true"' : ''} onclick="window._verifyYouTube()">${verifyingYouTube ? 'Verificando canal…' : 'Verificar canal'}</button>`
                   : ""
               }
               <button class="danger" type="button" onclick="window._disconnectSocial('${n.id}')">Desconectar</button>
@@ -66,10 +79,10 @@
           }
 
           return `
-            <article class="panel">
+            <article class="panel" data-social-provider="${esc(n.id)}">
               <div class="pane-top">
                 <h3>${esc(n.name)}</h3>
-                <span class="fine">${n.connected ? "CONECTADO" : n.configured ? "PRONTO" : "NAO CONFIGURADO"}</span>
+                <span class="fine">${n.connected ? "CONECTADO" : n.needs_reconnect ? "RECONECTAR" : n.configured ? "PRONTO PARA CONECTAR" : "NÃO CONFIGURADO"}</span>
               </div>
               ${
                 n.account?.name
@@ -78,25 +91,36 @@
               }
               ${
                 isYt && n.connected
-                  ? `<p class="hint">Permissao de upload: <b>${n.can_upload ? "Ativa (youtube.upload)" : "Somente leitura (youtube.readonly)"}</b></p>`
+                  ? `<p class="hint">${n.can_upload ? "Envio autorizado. Você escolhe e aprova cada corte antes de enviar." : "Canal conectado para consulta. Autorize o envio para publicar seus cortes."}</p>`
                   : ""
               }
+              ${n.needs_reconnect ? '<p class="hint">A autorização expirou. Conecte novamente pela tela oficial.</p>' : ''}
               <div style="margin-top:12px">${actions}</div>
             </article>`;
         })
         .join("");
     } catch (err) {
+      if (request !== socialRequest) return;
       grid.innerHTML = `<article class="panel"><p>${esc(err.message)}</p></article>`;
     }
   }
 
   window._verifyYouTube = async () => {
+    if (verifyingYouTube) return;
+    verifyingYouTube = true;
+    const button = $("[data-verify-youtube]");
+    if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Verificando canal…"; }
+    socialFeedback("Consultando o canal diretamente no YouTube…");
     try {
       const res = await api("/api/social/youtube/channel");
-      alert(`Canal verificado: ${res.channel.name} (${res.channel.id})\nUpload ativo: ${res.can_upload ? "Sim" : "Nao"}`);
-      loadSocialAccounts();
+      socialFeedback(`Canal verificado: ${res.channel.name} (${res.channel.id}). ${res.can_upload ? "Pronto para receber os cortes que você aprovar." : "Conectado para consulta. Autorize o envio para publicar os cortes."}`);
+      await loadSocialAccounts();
     } catch (err) {
-      alert(err.message);
+      socialFeedback(err.message, true);
+    } finally {
+      verifyingYouTube = false;
+      const current = $("[data-verify-youtube]");
+      if (current) { current.disabled = false; current.removeAttribute("aria-busy"); current.textContent = "Verificar canal"; }
     }
   };
 

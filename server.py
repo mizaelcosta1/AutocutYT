@@ -47,7 +47,7 @@ from layout_presets import builtin_presets
 from storage_delivery import StorageDelivery, DeliveryError
 from storage_routes import build_storage_router
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -166,7 +166,7 @@ async def basic_auth(request: Request, call_next):
         session = studio_auth.read_session(request)
         if not session:
             if request.method == "GET" and ("text/html" in request.headers.get("accept", "") or request.url.path == "/"):
-                return RedirectResponse('/login', status_code=303)
+                return RedirectResponse(studio_auth.login_url(request.url.path), status_code=303)
             return JSONResponse({"detail": "Faça login com Google"}, status_code=401)
         return await authorized(studio_auth.storage_owner(session['email']))
     # Permit unconfigured development only on the local machine.

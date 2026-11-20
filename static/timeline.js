@@ -89,6 +89,7 @@
     sample.style.fontFamily = `"${style.font_family}", sans-serif`;
     sample.style.fontSize = `${Math.round(style.font_size * 720 / 1080 * 100) / 100}px`;
     sample.style.color = style.color;
+    layoutEditor?.refreshPreview();
   }
   async function flushStyle() {
     clearTimeout(styleSaveTimer);
@@ -538,7 +539,10 @@
         layoutEditor = window.LayoutEditor.create({container:"#layout-editor", videoId, layoutSelect:"#export-layout",
           onChange:() => { $("#approve-preview").checked = false; updateApproval(); },
           getSubtitles:() => state.words.length ? $("#export-subtitles").checked : null,
+          getSubtitleStyle:readStyle,
+          getSubtitleText:at => state.words.filter(word => word.end > at && word.start < at + 1).slice(0,3).map(word => word.text).join(' '),
           getTime:() => video.currentTime || 0,
+          getDuration:() => state.duration || video.duration,
           onPresetSubtitles:(checked) => { $("#export-subtitles").checked = checked && state.words.length > 0; updateApproval(); }});
         await layoutEditor.load();
       }
