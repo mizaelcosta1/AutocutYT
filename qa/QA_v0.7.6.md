@@ -22,9 +22,9 @@ O player tem limites de dimensão explícitos. A timeline e a transcrição fica
 ## Validação automatizada
 
 - DOM: 66 casos passaram, sem falhas ou skips. Inclui submissão duplicada, detecção concorrente, retomada, múltiplas tarefas, falha de rede, armazenamento insuficiente e persistência de legendas nos dois editores.
-- API: 11 casos focados passaram, incluindo autenticação, transição de tarefas, espaço, reinício e persistência.
-- Render e legendas: 52 casos focados passaram, incluindo 31 cenários novos de atomicidade e limpeza.
-- Suíte Python completa: 260 casos passaram e 3 foram ignorados, sem falhas (25,80 s). Os skips são duas verificações opcionais com imagem de rosto e um caso legado de CLI; a detecção facial também foi executada no projeto real. Os testes de publicação simulam o envio, mantendo o agendador real, e não publicam no YouTube.
+- API: 12 casos focados passaram, incluindo autenticação, transição de tarefas, espaço, reinício, persistência e retomada após SIGKILL.
+- Render e legendas: 57 casos focados passaram, incluindo atomicidade, limpeza, escopo dos limites de threads e uma exportação real em 1080×1920 a 60 fps.
+- Suíte Python completa após a correção de memória: 266 casos passaram e 3 foram ignorados, sem falhas (27,82 s). Os skips são duas verificações opcionais com imagem de rosto e um caso legado de CLI; a detecção facial também foi executada no projeto real. Os testes de publicação simulam o envio, mantendo o agendador real, e não publicam no YouTube.
 
 ## Teste de produção realizado na versão anterior
 
@@ -35,3 +35,11 @@ Foi criado um clipe adicional de QA de seis segundos (12,5–18,5 s) na mesma gr
 ## Verificação após implantação
 
 As evidências da versão publicada, reprodução da prévia e exportação final são entregues em checkpoint separado depois da implantação. Não confundir testes de DOM com teste visual do site publicado. A checagem inicial indicou aproximadamente 42 MiB livres, insuficientes pela estimativa para renderizar a montagem completa de 90 s; não foi aumentado o volume nem apagada mídia do usuário.
+
+### Correção adicional encontrada na validação publicada
+
+A prévia real de seis segundos foi reproduzida completamente em 720×1280, H.264/AAC e 60 fps. Navegar para a montagem durante a tarefa recuperou a atividade e manteve o player disponível. A escolha de incluir legendas permaneceu marcada após recarregar. A tentativa da montagem de 90 s recebeu HTTP 507 e liberou os controles, com estimativa de 79,5 MB e 44,1 MB livres.
+
+A primeira exportação final em 1080p foi interrompida com SIGKILL do FFmpeg. As métricas mostraram pico próximo do limite de 1 GB; essa observação é compatível com pressão de memória, sem identificar a causa pelo log do kernel. Os pools automáticos do codec foram substituídos por limites explícitos: vídeo 2 threads, áudio 1, filtros 1. As opções cobrem entrada, saída, ffprobe e validação completa, mantendo dimensões, FPS, CRF e preset. A mensagem de interrupção orienta nova tentativa sem afirmar que foi necessariamente falta de memória.
+
+No ensaio local de seis segundos com fonte sintética 1920×1080 a 60 fps e a mesma composição, o pico de RSS por FFmpeg caiu de 639.900 KiB para 335.632 KiB (47,55%). O arquivo permaneceu em 1080×1920, 60 fps, H.264/AAC. A medição local não representa o consumo agregado do Railway; a repetição em produção é registrada no checkpoint entregue após publicar esta correção.

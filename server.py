@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
-from autoclips import (MEDIA_EXTENSIONS, analyze, download_vod, generate_srt, transcript_local, probe,
+from autoclips import (MEDIA_EXTENSIONS, CommandError, analyze, download_vod, generate_srt, transcript_local, probe,
                        render_clip, run, sha256_file, workspace, write_json)
 from timeline import (TimelineError, apply_command, new_timeline, rebase_words, total_duration)
 from timeline_export import render_project
@@ -228,6 +228,14 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
             outcome = {"status": "done", "result": fn()}
         except Exception as exc:
             error = exc.detail if isinstance(exc, HTTPException) else exc
+            if (kind in {"render-preview", "render-final", "timeline-preview", "timeline-final"}
+                    and isinstance(exc, CommandError) and exc.program == "ffmpeg" and exc.returncode == -9):
+                # On Unix, a negative return code denotes a signal. SIGKILL
+                # confirms interruption, but does not identify its cause.
+                logging.getLogger("uvicorn.error").warning("FFmpeg interrupted during %s (return code %d)",
+                                                          kind, exc.returncode)
+                error = ("A renderização foi interrompida no servidor antes de terminar. "
+                         "Isso pode ocorrer ao atingir um limite de recursos. Tente novamente ou use um trecho menor.")
             outcome = {"status": "error", "error": str(error)[:500]}
         finally:
             TASK_CONTEXT.task_id = None

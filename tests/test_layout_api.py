@@ -292,6 +292,33 @@ def test_failed_clip_render_preserves_previous_preview_and_its_subtitles(studio,
     assert server.get_manifest(vid)[0]["clips"][0]["preview"] == before
 
 
+def test_killed_final_render_releases_activity_and_keeps_the_approved_preview(studio, monkeypatch):
+    from autoclips import CommandError
+
+    server, client, vid = studio
+    base = f"/api/videos/{vid}"
+    assert client.post(base + "/manual", json={"start": 0, "end": 1}).status_code == 200
+    payload = {"clip_id": "clip_01", "approved_selection": True}
+    task_done(client, client.post(base + "/render/preview", json=payload))
+    before = client.get(base + "/manifest").json()["clips"][0]
+    approved = {**payload, "approved_preview": True, "approved_preview_id": before["preview_options"]["render_id"]}
+
+    def killed(*args, **kwargs):
+        raise CommandError("Comando falhou (-9): ffmpeg", returncode=-9, program="ffmpeg")
+
+    with monkeypatch.context() as attempt:
+        attempt.setattr(server, "render_clip", killed)
+        export = client.post(base + "/render/final", json=approved)
+        task = terminal_task(client, export)
+    assert task["status"] == "error"
+    assert "interrompida" in task["error"] and "Tente novamente" in task["error"]
+    assert client.get(base + "/activity").json() == {"activity": None}
+    after = client.get(base + "/manifest").json()["clips"][0]
+    assert after["preview_options"] == before["preview_options"]
+    assert after["final_url"] is None and client.get(after["preview_url"]).status_code == 200
+    task_done(client, client.post(base + "/render/final", json=approved))
+
+
 def test_clip_requires_face_matching_regions_and_exact_approved_preview(studio):
     _, client, vid = studio
     base = f"/api/videos/{vid}"

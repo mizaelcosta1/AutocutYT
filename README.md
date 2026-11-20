@@ -7,6 +7,7 @@
 - Uma transcrição interrompida por reinício permite nova tentativa e preserva as palavras já gravadas.
 - A exportação verifica espaço antes de entrar na fila e antes de executar. A estimativa considera duração, qualidade, áudio e as cópias necessárias à montagem. O tamanho real varia com o conteúdo e a compressão.
 - Os MP4s são publicados somente depois das verificações. Uma falha remove os arquivos temporários da tentativa e preserva a exportação anterior.
+- A decodificação e a codificação de vídeo usam até duas threads; áudio e filtros usam uma. O limite também vale para a validação completa dos arquivos, reduzindo o consumo em servidores pequenos sem mudar resolução, FPS, CRF ou preset de qualidade.
 - Os controles do player ficam dentro da área visível. A timeline e a transcrição aparecem logo abaixo do vídeo, ao lado das opções de exportação em telas largas.
 
 Se um pedido perder a resposta, **Atualizar atividade** consulta o servidor sem reenviar a operação. Quando o resultado continua incerto, confira os arquivos antes de liberar novas ações.

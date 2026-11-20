@@ -28,6 +28,12 @@ from composition import build_composition_graph, normalize_layout_config, output
 from subtitles import fmt_srt, generate_srt, generate_vtt, prepared_ass
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".ts", ".m4v"}
+# FFmpeg otherwise sizes decoder/encoder pools from the host CPU count, which
+# can greatly exceed a container's 2-CPU/1-GB allocation. Apply codec options
+# separately before each input and after the output codec; filter pools are
+# global. These limits do not change dimensions, FPS, CRF or the x264 preset.
+FFMPEG_CODEC_THREAD_OPTIONS = ("-threads:v", "2", "-threads:a", "1")
+FFMPEG_FILTER_THREAD_OPTIONS = ("-filter_threads", "1", "-filter_complex_threads", "1")
 CUE_WEIGHTS = {
     "olha isso": 4, "nao acredito": 5, "meu deus": 5, "que isso": 3,
     "inacreditavel": 4, "caramba": 3, "sensacional": 3, "surreal": 3,
@@ -44,11 +50,21 @@ def norm(text: str) -> str:
     return "".join(c for c in text if not unicodedata.combining(c)).lower()
 
 
+class CommandError(RuntimeError):
+    """Retain the process exit status for safe, accurate caller diagnostics."""
+
+    def __init__(self, message: str, *, returncode: int, program: str):
+        super().__init__(message)
+        self.returncode = returncode
+        self.program = program
+
+
 def run(args: list[str], *, cwd: Path | None = None, timeout: int | None = None) -> subprocess.CompletedProcess:
     p = subprocess.run(args, cwd=str(cwd) if cwd else None, text=True, capture_output=True,
                        timeout=timeout, check=False)
     if p.returncode:
-        raise RuntimeError(f"Comando falhou ({p.returncode}): {' '.join(args[:4])}\n{p.stderr[-3000:]}")
+        raise CommandError(f"Comando falhou ({p.returncode}): {' '.join(args[:4])}\n{p.stderr[-3000:]}",
+                           returncode=p.returncode, program=Path(args[0]).name)
     return p
 
 
@@ -60,7 +76,7 @@ def require_executables(*names: str) -> None:
 
 def probe(path: Path) -> dict:
     require_executables("ffprobe")
-    p = run(["ffprobe", "-v", "error", "-show_format", "-show_streams",
+    p = run(["ffprobe", "-v", "error", *FFMPEG_CODEC_THREAD_OPTIONS, "-show_format", "-show_streams",
              "-of", "json", str(path)])
     data = json.loads(p.stdout)
     video = next((x for x in data.get("streams", []) if x.get("codec_type") == "video"), None)
@@ -367,13 +383,14 @@ def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
                 graph += ";[base]null[v]"
             duration = max(.1, clip["end"] - clip["start"])
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                   "-ss", str(clip["start"]), "-i", str(src), "-t", str(duration),
-                   "-filter_complex_threads", "2", "-filter_complex", graph, "-map", "[v]"]
+                   *FFMPEG_FILTER_THREAD_OPTIONS,
+                   "-ss", str(clip["start"]), *FFMPEG_CODEC_THREAD_OPTIONS, "-i", str(src),
+                   "-t", str(duration), "-filter_complex", graph, "-map", "[v]"]
             if has_audio:
                 cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
             else:
                 cmd += ["-an"]
-            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            cmd += ["-c:v", "libx264", *FFMPEG_CODEC_THREAD_OPTIONS, "-preset", "veryfast", "-crf", "23",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(pending)]
             run(cmd, cwd=staging)
         meta = probe(pending)
@@ -381,7 +398,9 @@ def render_clip(src: Path, dst: Path, clip: dict, *, quality: str,
             raise RuntimeError("Resolucao divergente em " + str(dst))
         if abs(meta["duration"] - duration) > 1.5:
             raise RuntimeError("Duracao divergente em " + str(dst))
-        run(["ffmpeg", "-v", "error", "-xerror", "-i", str(pending), "-f", "null", "-"])
+        run(["ffmpeg", "-v", "error", "-xerror", *FFMPEG_FILTER_THREAD_OPTIONS,
+             *FFMPEG_CODEC_THREAD_OPTIONS, "-i", str(pending),
+             *FFMPEG_CODEC_THREAD_OPTIONS, "-f", "null", "-"])
         try:
             unchanged = source_revision() == revision
         except FileNotFoundError:

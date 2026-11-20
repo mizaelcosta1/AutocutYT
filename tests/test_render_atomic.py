@@ -5,6 +5,9 @@ caller-owned captions and unrelated files must survive every failed attempt.
 Real codec/render validation is covered by test_subtitles/test_timeline_export.
 """
 from pathlib import Path
+from fractions import Fraction
+import json
+import shutil
 import subprocess
 
 import pytest
@@ -198,3 +201,106 @@ def test_renderer_rejects_destinations_that_could_replace_the_original(tmp_path,
                 quality="preview", layout="fit", subtitles=False)
     assert source.read_bytes() == b"irreplaceable footage"
     assert not list(tmp_path.glob("autoclips-*"))
+
+
+def assert_bounded_video_pipeline(command):
+    """Input decoder and output encoder options have separate FFmpeg scopes."""
+    input_index = command.index("-i")
+    thread_indices = [index for index, value in enumerate(command) if value == "-threads:v"]
+    assert len(thread_indices) == 2
+    assert thread_indices[0] < input_index < thread_indices[1]
+    assert all(1 <= int(command[index + 1]) <= 2 for index in thread_indices)
+    for flag in ("-filter_threads", "-filter_complex_threads"):
+        assert int(command[command.index(flag) + 1]) == 1
+
+
+def test_render_and_full_decode_bound_decoder_encoder_and_filter_threads(tmp_path, monkeypatch):
+    source, destination, captions, _ = fixture_files(tmp_path, True)
+    commands = []
+    monkeypatch.setattr(autoclips, "require_executables", lambda *_: None)
+    monkeypatch.setattr(autoclips, "probe", lambda _: {
+        "width": 1080, "height": 1920, "duration": 1.0, "audio_codec": "aac"})
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        if "-filter_complex" in args:
+            Path(args[-1]).write_bytes(b"validated new export")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(autoclips, "run", fake_run)
+    autoclips.render_clip(source, destination, {"start": 0, "end": 1},
+        quality="final", layout="fit", burn=True, srt=captions, has_audio=True)
+    assert len(commands) == 2
+    for command in commands:
+        assert_bounded_video_pipeline(command)
+        assert "-r" not in command
+    encoder = commands[0]
+    assert encoder[encoder.index("-preset") + 1] == "veryfast"
+    assert encoder[encoder.index("-crf") + 1] == "23"
+    assert encoder.index("-c:v") < [i for i, value in enumerate(encoder) if value == "-threads:v"][1]
+
+
+def test_timeline_full_decode_obeys_same_thread_limits(tmp_path, monkeypatch):
+    source, destination, _, _ = fixture_files(tmp_path, True)
+    document = new_timeline("a" * 32, 1, autoclips.sha256_file(source))
+    commands = []
+    monkeypatch.setattr(timeline_export, "probe", lambda _: {
+        "width": 720, "height": 1280, "duration": 1.0, "audio_codec": None})
+    monkeypatch.setattr(timeline_export, "render_clip", lambda _source, part, *_args, **_kw: part.write_bytes(b"part"))
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        if "concat" in args:
+            Path(args[-1]).write_bytes(b"joined media")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(timeline_export, "run", fake_run)
+    timeline_export.render_project(source, destination, document, words=[],
+        quality="preview", layout="fit", subtitles=False)
+    assert len(commands) == 2
+    assert_bounded_video_pipeline(commands[-1])
+
+
+@pytest.mark.parametrize("returncode", [-9, 1])
+def test_run_preserves_returncode_without_asserting_an_unverified_cause(monkeypatch, returncode):
+    monkeypatch.setattr(autoclips.subprocess, "run", lambda args, **kwargs:
+        subprocess.CompletedProcess(args, returncode, "", ""))
+    with pytest.raises(autoclips.CommandError) as failure:
+        autoclips.run(["/usr/bin/ffmpeg", "-hide_banner", "-loglevel", "error"])
+    assert isinstance(failure.value, RuntimeError)
+    assert failure.value.returncode == returncode
+    assert failure.value.program == "ffmpeg"
+    assert "OOM" not in str(failure.value)
+
+
+def test_real_split_caption_final_keeps_1080p60_and_audio(tmp_path):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("FFmpeg and ffprobe are required for real media validation")
+    source = tmp_path / "source1080p60.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-filter_threads", "1", "-filter_complex_threads", "1",
+        "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "1", "-c:v", "libx264", "-threads:v", "2", "-preset", "ultrafast",
+        "-c:a", "aac", "-threads:a", "1", "-pix_fmt", "yuv420p", str(source)],
+        check=True, capture_output=True, timeout=30)
+    captions = tmp_path / "captions.srt"
+    autoclips.generate_srt([{"start": .1, "end": .9, "text": "Transmissão em 60 FPS"}], 0., 1., captions)
+    config = {"mode": "split_caption", "aspect": "9:16", "game_fit": "cover",
+              "face": {"x": .07, "y": .073, "w": .136, "h": .207},
+              "gameplay": {"x": 0., "y": .28, "w": 1., "h": .72}}
+    destination = tmp_path / "final.mp4"
+    result = autoclips.render_clip(source, destination, {"start": 0., "end": 1.},
+        quality="final", layout="fit", burn=True, srt=captions, has_audio=True,
+        layout_config=config,
+        subtitle_style={"font_family": "Liberation Sans", "font_size": 52, "color": "#00FFFF"})
+    assert (result["width"], result["height"]) == (1080, 1920)
+    assert Fraction(result["fps"]) == 60
+    assert result["audio_codec"] == "aac"
+    assert result["video_codec"] == "h264"
+    assert result["duration"] == pytest.approx(1., abs=.05)
+    details = json.loads(subprocess.check_output([
+        "ffprobe", "-v", "error", "-threads:v", "2", "-count_frames", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames", "-of", "json", str(destination)], timeout=20))
+    assert int(details["streams"][0]["nb_read_frames"]) == 60
+    assert not list(tmp_path.glob("autoclips-render-*"))

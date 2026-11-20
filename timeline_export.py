@@ -8,7 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 
-from autoclips import generate_srt, probe, render_clip, run, sha256_file
+from autoclips import (FFMPEG_CODEC_THREAD_OPTIONS, FFMPEG_FILTER_THREAD_OPTIONS,
+                       generate_srt, probe, render_clip, run, sha256_file)
 from composition import normalize_layout_config, output_dimensions, require_face
 from subtitles import normalize_subtitle_style
 from timeline import total_duration
@@ -69,7 +70,9 @@ def render_project(source: Path, destination: Path, document: dict, *, words: li
             raise ValueError("Audio original desapareceu na montagem")
         if abs(rendered["duration"] - edited_duration) > 1.1:
             raise ValueError("Duracao divergente da timeline")
-        run(["ffmpeg", "-v", "error", "-xerror", "-i", str(pending), "-f", "null", "-"], timeout=180)
+        run(["ffmpeg", "-v", "error", "-xerror", *FFMPEG_FILTER_THREAD_OPTIONS,
+             *FFMPEG_CODEC_THREAD_OPTIONS, "-i", str(pending),
+             *FFMPEG_CODEC_THREAD_OPTIONS, "-f", "null", "-"], timeout=180)
         if not source.is_file() or sha256_file(source) != document["source_sha256"]:
             raise ValueError("O vídeo original mudou durante a exportação.")
         pending.replace(destination)
