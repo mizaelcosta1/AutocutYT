@@ -127,7 +127,7 @@ def _auth_headers(response):
 def login_html(configured_ok, next_path='/', error_message='', connection_error=False):
     target = safe_next(next_path)
     google_url = '/login/google' + ('?' + urlencode({'next': target}) if target != '/' else '')
-    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.8.1</div><h1>AutoClips AI Studio</h1><p class="intro">Da live ao clipe: combine facecam e gameplay, personalize as legendas e revise antes de exportar.</p>'''
+    content = '''<div class="brand-mark" aria-hidden="true">A<span>✂</span></div><div class="eyebrow">SEU ESTÚDIO DE CORTES · v0.8.2</div><h1>AutoClips AI Studio</h1><p class="intro">Da live ao clipe: combine facecam e gameplay, personalize as legendas e revise antes de exportar.</p>'''
     if error_message:
         content += '<div class="auth-message" role="alert"><h2>Não foi possível concluir</h2><p>' + escape(error_message) + '</p></div>'
     if configured_ok:

@@ -29,7 +29,7 @@ GITHUB_API = "https://api.github.com"
 GITHUB_VERSION = "2026-03-10"
 CHUNK = 8 * 1024 * 1024
 DEFAULT_SETTINGS = {"auto_download": False, "auto_upload": False,
-                    "provider": "drive", "qualities": ["final"]}
+                    "provider": "drive", "qualities": ["final"], "archive_after_upload": False}
 ACTIVE_STATES = {"queued", "running", "retry_wait"}
 MAX_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
@@ -147,6 +147,10 @@ class StorageDelivery:
         self._client_factory = client_factory or (lambda: httpx.Client(
             timeout=httpx.Timeout(30, read=120, write=120), follow_redirects=False, trust_env=False))
         self.clock = clock or time.time
+        # Import after the service module is initialized; the archive reuses its
+        # authenticated transport and durable outbox instead of storing tokens.
+        from storage_archive import StorageArchive
+        self.archiver = StorageArchive(self)
         if self.jobs_path.exists():
             try:
                 self.jobs = json.loads(vault.cipher.decrypt(self.jobs_path.read_bytes()))
@@ -210,7 +214,7 @@ class StorageDelivery:
         _safe_component(owner, "conta")
         if not isinstance(patch, dict) or set(patch) - set(DEFAULT_SETTINGS):
             raise DeliveryError("Configuração de envio inválida.")
-        for key in ("auto_download", "auto_upload"):
+        for key in ("auto_download", "auto_upload", "archive_after_upload"):
             if key in patch and type(patch[key]) is not bool:
                 raise DeliveryError("As opções de automação devem estar ativadas ou desativadas.")
         if "provider" in patch and patch["provider"] not in {"drive", "github"}:
@@ -225,6 +229,8 @@ class StorageDelivery:
             settings["qualities"] = list(dict.fromkeys(settings["qualities"]))
             if settings["auto_upload"] and not self.public_settings(owner)[settings["provider"]]["connected"]:
                 raise DeliveryError("Conecte o armazenamento escolhido antes de ativar o envio automático.")
+            if settings["archive_after_upload"] and (not settings["auto_upload"] or settings["provider"] != "drive"):
+                raise DeliveryError("Para liberar espaço local, ative o envio automático ao Google Drive.")
             entry["settings"] = settings
             self.vault.save(state)
         return self.public_settings(owner)
@@ -341,6 +347,7 @@ class StorageDelivery:
             settings = {**DEFAULT_SETTINGS, **entry.get("settings", {})}
             if settings["provider"] == provider:
                 settings["auto_upload"] = False
+                settings["archive_after_upload"] = False
             entry["settings"] = settings
             self.vault.save(state)
         self.wake.set()
@@ -388,10 +395,18 @@ class StorageDelivery:
             raise DeliveryError("Cada arquivo em GitHub Releases deve ter menos de 2 GiB. Use Google Drive para este corte.")
         digest = _sha(source)
         target = self._destination(provider, connection)
+        archive_requested = bool(settings["archive_after_upload"] and provider == "drive"
+                                 and artifact["quality"] == "final")
         key = hashlib.sha256(json.dumps([owner, provider, target, artifact["render_id"], digest], separators=(",", ":")).encode()).hexdigest()
         with self.lock:
             existing = next((j for j in self.jobs.values() if j.get("dedupe") == key and j["status"] != "cancelled"), None)
             if existing:
+                # An existing confirmed copy can be adopted by the explicit
+                # optimization action; no second upload is needed.
+                if archive_requested and not existing.get("archived"):
+                    self._update(existing, source_path=str(source), archive_requested=True,
+                                 archive_next_attempt=0, archive_error=None)
+                    self.wake.set()
                 return self._public_job(existing)
             previous = next((j for j in reversed(list(self.jobs.values()))
                              if j.get("dedupe") == key and j["status"] == "cancelled"), None)
@@ -410,6 +425,8 @@ class StorageDelivery:
                        "video_id": artifact["video_id"], "clip_id": artifact.get("clip_id"), "kind": artifact["kind"],
                        "quality": artifact["quality"], "render_id": artifact["render_id"], "filename": name,
                        "asset_name": name[:-4] + "-" + digest + ".mp4", "path": str(pin), "sha256": digest,
+                       "source_path": str(source), "archive_requested": archive_requested,
+                       "archived": False, "archive_error": None,
                        "total_bytes": size, "bytes_sent": 0, "status": "queued", "progress": 0,
                        "attempts": 0, "next_attempt": 0, "created_at": _utc(), "updated_at": _utc(),
                        # Cancelling never deletes remote data. A later explicit
@@ -430,14 +447,23 @@ class StorageDelivery:
     @staticmethod
     def _public_job(job):
         names = ("id", "provider", "video_id", "clip_id", "kind", "quality", "render_id", "filename", "status",
-                 "progress", "bytes_sent", "total_bytes", "url", "error", "attempts", "created_at", "updated_at")
-        return {key: job.get(key) for key in names}
+                 "progress", "bytes_sent", "total_bytes", "url", "error", "attempts", "created_at", "updated_at",
+                 "archived", "archived_at", "archive_error")
+        return {**{key: job.get(key) for key in names},
+                "archive_pending": bool(job.get("status") == "succeeded" and job.get("archive_requested")
+                                        and not job.get("archived") and not job.get("archive_error"))}
 
     def list_jobs(self, owner, video_id=None):
         _safe_component(owner, "conta")
+        settings = self.public_settings(owner)
+        archiving = settings["archive_after_upload"] and settings["auto_upload"] and settings["provider"] == "drive"
         with self.lock:
-            return [self._public_job(j) for j in sorted(self.jobs.values(), key=lambda j: j["created_at"], reverse=True)
-                    if j["owner"] == owner and (video_id is None or j["video_id"] == video_id)][:100]
+            result = [self._public_job(j) for j in sorted(self.jobs.values(), key=lambda j: j["created_at"], reverse=True)
+                      if j["owner"] == owner and (video_id is None or j["video_id"] == video_id)][:100]
+        if not archiving:
+            for job in result:
+                job["archive_pending"] = False
+        return result
 
     def retry(self, owner, job_id):
         with self.lock:
@@ -529,7 +555,7 @@ class StorageDelivery:
         if not file_id:
             return None
         response = _request(client, "GET", DRIVE_API + "/files/" + quote(file_id, safe=""), headers=headers,
-                            params={"fields": "id,size,sha256Checksum,appProperties,trashed,parents"})
+                            params={"fields": "id,size,sha256Checksum,appProperties,trashed,parents,capabilities(canDownload)"})
         if response.status_code == 404:
             return None
         item = _json(_check(response))
@@ -543,7 +569,8 @@ class StorageDelivery:
             raise DeliveryError("Já existe um arquivo remoto para este envio, mas a integridade não foi confirmada. Confira o destino antes de tentar novamente.")
         if properties.get("autoclips_job") != job["dedupe"] or job["destination"][1] not in item.get("parents", []):
             raise DeliveryError("O arquivo remoto não corresponde ao destino autorizado para este envio.")
-        return {"url": f"https://drive.google.com/file/d/{quote(file_id, safe='')}/view", "remote_id": file_id}
+        return {"url": f"https://drive.google.com/file/d/{quote(file_id, safe='')}/view", "remote_id": file_id,
+                "can_download": item.get("capabilities", {}).get("canDownload") is True}
 
     def _drive_upload(self, job, connection):
         token = self._drive_token(job["owner"], connection)
@@ -718,9 +745,35 @@ class StorageDelivery:
         if not self.run_lock.acquire(blocking=False):
             return False
         try:
-            return self._run_once()
+            processed = self._run_once()
+            # Archiving has a separate outcome: a confirmed upload remains
+            # successful if the disk, remote permissions, or an active edit
+            # prevent releasing its local copy. Never hold the outbox lock
+            # while acquiring the application's media lock.
+            archived = self._archive_once()
+            return processed or archived
         finally:
             self.run_lock.release()
+
+    def _archive_once(self):
+        with self.lock:
+            candidates = [j for j in self.jobs.values()
+                          if j.get("status") == "succeeded" and j.get("archive_requested")
+                          and not j.get("archived") and j.get("archive_next_attempt", 0) <= self.clock()]
+        for job in candidates:
+            settings = self.public_settings(job["owner"])
+            if not (settings["archive_after_upload"] and settings["auto_upload"] and settings["provider"] == "drive"):
+                continue
+            self.archiver.archive(job)
+            if not job.get("archived"):
+                try:
+                    self._update(job, archive_next_attempt=self.clock() + 60)
+                except DeliveryError:
+                    # The original stays available; avoid a busy loop while
+                    # the volume is too full to persist the next attempt.
+                    job["archive_next_attempt"] = self.clock() + 60
+            return True
+        return False
 
     def _run_once(self):
         with self.lock:

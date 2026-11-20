@@ -33,10 +33,17 @@ const job = (extra = {}) => ({id:"job_1", provider:"drive", video_id:A, kind:"cl
 async function fixture(t, options = {}) {
   const page = options.page || "index", calls = [], downloads = [], jobs = new Map(), exports = {};
   const settings = {
-    auto_download:false, auto_upload:false, provider:"drive", qualities:["final"],
+    auto_download:false, auto_upload:false, archive_after_upload:false, provider:"drive", qualities:["final"],
     drive:{configured:true, connected:false, folder_name:"AutoClips", folder_url:""},
     github:{configured:true, connected:false, repository:"", private:true},
     ...clone(options.settings || {})
+  };
+  const capacity = {
+    local:{total_bytes:1e9, used_bytes:4e8, free_bytes:6e8, low_space:false, reserve_bytes:1e8},
+    drive:{connected:settings.drive.connected, status:settings.drive.connected ? "ready" : "disconnected",
+      total_bytes:2e10, used_bytes:2e9, free_bytes:18e9, max_upload_bytes:5e12, error:null},
+    archive:{archived_bytes:0, archived_count:0, pending_count:0},
+    ...clone(options.capacity || {})
   };
   const dom = new JSDOM(script(page + ".html"), {
     url:"https://studio.example.test/" + (page === "timeline" ? "studio/" + A : ""),
@@ -53,18 +60,24 @@ async function fixture(t, options = {}) {
   };
   w.AutoClipsLive = {refresh(){}, destroyAll(){}};
   const nativeTimeout = w.setTimeout.bind(w);
-  w.setTimeout = (fn, ms, ...args) => nativeTimeout(fn, ms === 1250 ? 2 : ms, ...args);
+  w.setTimeout = (fn, ms, ...args) => nativeTimeout(fn,
+    ms === 1250 || options.fastArchivePoll && ms === 10000 ? 2 : ms, ...args);
   let renderResult = null;
   w.fetch = async (url, init = {}) => {
     const parsed = new URL(url, w.location.origin), pathname = parsed.pathname, method = init.method || "GET";
     const body = init.body ? JSON.parse(init.body) : null;
     const call = {pathname, method, body, signal:init.signal};
     calls.push(call);
-    const custom = options.intercept?.(call, {settings, jobs, exports});
+    const custom = options.intercept?.(call, {settings, capacity, jobs, exports});
     if (custom !== undefined) return await custom;
     if (pathname === "/api/storage/settings") {
       if (method === "PATCH") Object.assign(settings, body);
       return reply(settings);
+    }
+    if (pathname === "/api/storage/capacity") return reply(capacity);
+    if (pathname === "/api/storage/optimize-drive") {
+      Object.assign(settings,{provider:"drive",auto_upload:true,archive_after_upload:true,qualities:["final"]});
+      return reply({settings,summary:options.optimizeSummary || {queued:0,already_archived:0,errors:0}});
     }
     if (pathname === "/api/storage/github") {
       settings.github = {configured:true, connected:true, private:true, repository:body.repository};
@@ -73,6 +86,8 @@ async function fixture(t, options = {}) {
     if (/^\/api\/storage\/(drive|github)\/disconnect$/.test(pathname)) {
       settings[pathname.split("/")[3]].connected = false;
       settings.auto_upload = false;
+      settings.archive_after_upload = false;
+      if (pathname.includes("/drive/")) { capacity.drive.connected = false; capacity.drive.status = "disconnected"; }
       return reply(settings);
     }
     if (/\/deliveries$/.test(pathname)) {
@@ -134,7 +149,7 @@ async function fixture(t, options = {}) {
     await until(() => calls.some(call => call.pathname === "/api/videos/" + id + "/deliveries"));
     await sleep(0);
   };
-  return {w,$,calls,downloads,jobs,exports,settings,change,mount,setVideo};
+  return {w,$,calls,downloads,jobs,exports,settings,capacity,change,mount,setVideo};
 }
 
 test("connections start off, unavailable Drive is truthful and existing files do not auto-download", async t => {
@@ -160,13 +175,193 @@ test("saving automation requires explicit opt-in and preserves both quality sele
   f.$("[data-storage-save]").click();
   await until(()=>f.$("[data-delivery-feedback]").textContent.includes("Automação salva"));
   assert.deepEqual(f.calls.find(call=>call.method==="PATCH").body,{
-    auto_download:true,auto_upload:true,provider:"drive",qualities:["preview","final"]
+    auto_download:true,auto_upload:true,archive_after_upload:false,provider:"drive",qualities:["preview","final"]
   });
   assert.equal(f.downloads.length,0);
   assert.match(f.$("[data-delivery-summary]").textContent,/Google Drive/);
   f.change("[data-storage-field=provider]","github");
   assert.equal(f.$("[data-storage-field=auto_upload]").checked,false);
   assert.equal(f.$("[data-storage-field=auto_upload]").disabled,true);
+});
+
+test("capacity separates editing space from the connected account and reports confirmed archives", async t => {
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true}},capacity:{
+    local:{total_bytes:500e6,used_bytes:460e6,free_bytes:40e6,low_space:true,reserve_bytes:100e6},
+    drive:{connected:true,status:"ready",total_bytes:200e9,used_bytes:170e9,free_bytes:30e9},
+    archive:{archived_bytes:1.5e9,archived_count:3,pending_count:2}
+  }});
+  assert.equal(f.$("[data-local-free]").textContent,"40 MB livres");
+  assert.equal(f.$("[data-local-usage]").textContent,"460 MB usados de 500 MB");
+  assert.equal(f.$("[data-local-meter]").value,92);
+  assert.equal(f.$("[data-capacity-local]").classList.contains("is-warning"),true);
+  assert.match(f.$("[data-local-detail]").textContent,/Pouco espaço/);
+  assert.equal(f.$("[data-drive-free]").textContent,"30 GB livres");
+  assert.equal(f.$("[data-drive-meter]").value,85);
+  assert.match(f.$("[data-archive-total]").textContent,/3 finais arquivados no Drive.*1,5 GB ao todo/);
+  assert.match(f.$("[data-archive-pending]").textContent,/2 finais aguardando.*atualizado automaticamente/);
+  assert.equal(f.$("[data-storage-capacity]").getAttribute("aria-busy"),"false");
+  assert.equal(f.calls.some(call=>call.method!=="GET"),false);
+});
+
+test("unknown Drive quota is never replaced with fixed free space or an unlimited claim", async t => {
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true}},capacity:{
+    drive:{connected:true,status:"ready",total_bytes:null,used_bytes:"2500000000",free_bytes:null}
+  }});
+  assert.equal(f.$("[data-drive-free]").textContent,"Espaço livre não informado");
+  assert.match(f.$("[data-drive-usage]").textContent,/2,5 GB usados.*limite não informado/);
+  assert.equal(f.$("[data-drive-meter]").hidden,true);
+  assert.doesNotMatch(f.$("[data-capacity-drive]").textContent,/ilimitado|15 GB|0 B livres/i);
+  f.capacity.drive.total_bytes=10e9; f.capacity.drive.used_bytes=10e9; f.capacity.drive.free_bytes=0;
+  await f.w.StorageDeliveryUI.refreshCapacity();
+  assert.equal(f.$("[data-drive-free]").textContent,"0 B livres");
+  assert.equal(f.$("[data-capacity-drive]").classList.contains("is-warning"),true);
+});
+
+test("Drive quota errors keep connection state separate and escape provider text", async t => {
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true}},capacity:{
+    drive:{connected:true,status:"error",error:"Quota indisponível <img src=x onerror=alert(1)>"}
+  }});
+  assert.equal(f.$("[data-drive-status]").textContent,"Conectado");
+  assert.equal(f.$("[data-drive-free]").textContent,"Não foi possível consultar");
+  assert.match(f.$("[data-drive-usage]").textContent,/Quota indisponível/);
+  assert.equal(f.$("[data-capacity-drive] img"),null);
+  assert.equal(f.$("[data-drive-meter]").hidden,true);
+});
+
+test("capacity endpoint failure is recoverable and does not invent capacity or disconnect Drive", async t => {
+  let fail=true;
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true}},intercept:call=>
+    fail && call.pathname==="/api/storage/capacity" ? reply({detail:"Tente novamente."},503) : undefined});
+  assert.equal(f.$("[data-local-free]").textContent,"Indisponível no momento");
+  assert.match(f.$("[data-capacity-error]").textContent,/Tente novamente/);
+  assert.equal(f.$("[data-drive-status]").textContent,"Conectado");
+  fail=false; f.$("[data-storage-refresh]").click();
+  await until(()=>f.$("[data-capacity-error]").hidden);
+  assert.equal(f.$("[data-local-free]").textContent,"600 MB livres");
+});
+
+test("disconnected Drive uses its own OAuth action without silently enabling archiving", async t => {
+  const f=await fixture(t);
+  assert.equal(f.$("[data-drive-connect]").hidden,false);
+  assert.equal(new URL(f.$("[data-drive-connect]").href).pathname,"/auth/storage/drive/start");
+  assert.equal(f.$("[data-drive-optimize]").hidden,true);
+  assert.equal(f.$("[data-storage-field=archive_after_upload]").disabled,true);
+  assert.equal(f.$("[data-storage-field=archive_after_upload]").checked,false);
+  assert.match(f.$("[data-drive-detail]").textContent,/ChatGPT/);
+  assert.equal(f.$("[data-drive-free]").textContent,"Conecte sua conta");
+  assert.equal(f.calls.some(call=>call.method!=="GET"),false);
+});
+
+test("Drive optimization is one explicit action and renders server settings without duplicate submissions", async t => {
+  const pending=deferred();
+  const f=await fixture(t,{settings:{auto_download:true,provider:"github",qualities:["preview","final"],
+    drive:{configured:true,connected:true},github:{connected:true,repository:"tester/private"}},
+    intercept:call=>call.pathname==="/api/storage/optimize-drive" ? pending.promise : undefined});
+  const button=f.$("[data-drive-optimize]");
+  assert.equal(button.hidden,false);
+  assert.equal(f.$("[data-storage-field=archive_after_upload]").checked,false);
+  button.click(); button.click();
+  assert.equal(f.calls.filter(call=>call.pathname==="/api/storage/optimize-drive").length,1);
+  assert.equal(button.disabled,true);
+  assert.equal(f.$("[data-storage-save]").disabled,true);
+  assert.equal(f.$('[data-storage-disconnect="drive"]').disabled,true);
+  Object.assign(f.settings,{provider:"drive",auto_upload:true,archive_after_upload:true,qualities:["final"]});
+  pending.resolve(reply({settings:f.settings,summary:{queued:2,already_archived:1,errors:0}}));
+  await until(()=>!button.disabled);
+  assert.equal(f.$("[data-storage-field=auto_download]").checked,true);
+  assert.equal(f.$("[data-storage-field=auto_upload]").checked,true);
+  assert.equal(f.$("[data-storage-field=archive_after_upload]").checked,true);
+  assert.equal(f.$("[data-storage-field=provider]").value,"drive");
+  assert.equal(f.$("[data-storage-field=qualities]").value,"final");
+  assert.match(f.$("[data-delivery-feedback]").textContent,/2 arquivos finais na fila.*1 final já estava arquivado/);
+  assert.equal(f.calls.filter(call=>call.method==="PATCH").length,0);
+  assert.ok(f.calls.filter(call=>call.pathname==="/api/storage/capacity").length>=2);
+});
+
+test("failed optimization preserves opt-outs and a partial queue reports attention without fake archiving", async t => {
+  let fail=true;
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true}},optimizeSummary:{queued:1,already_archived:0,errors:[{message:"in use"}]},
+    intercept:call=>fail && call.pathname==="/api/storage/optimize-drive" ? reply({detail:"Reconecte o Drive."},409) : undefined});
+  f.$("[data-drive-optimize]").click();
+  await until(()=>!f.$("[data-drive-optimize]").disabled);
+  assert.match(f.$("[data-delivery-feedback]").textContent,/Reconecte o Drive/);
+  assert.equal(f.$("[data-storage-field=archive_after_upload]").checked,false);
+  assert.equal(f.$("[data-storage-field=auto_upload]").checked,false);
+  fail=false; f.$("[data-drive-optimize]").click();
+  await until(()=>!f.$("[data-drive-optimize]").disabled);
+  assert.match(f.$("[data-delivery-feedback]").textContent,/1 arquivo final na fila.*1 arquivo precisa de atenção/);
+  assert.match(f.$("[data-delivery-feedback]").textContent,/cópias locais.*preservadas/);
+  assert.equal(f.$("[data-archive-total]").hidden,true);
+});
+
+test("archiving preferences require Drive and auto-upload and remain an explicit saved opt-in", async t => {
+  const f=await fixture(t,{settings:{drive:{configured:true,connected:true},github:{connected:true,repository:"tester/private"}}});
+  const checkbox=f.$("[data-storage-field=archive_after_upload]");
+  assert.equal(checkbox.disabled,true);
+  f.change("[data-storage-field=auto_upload]",true);
+  assert.equal(checkbox.disabled,false);
+  assert.equal(checkbox.checked,false);
+  f.change("[data-storage-field=archive_after_upload]",true);
+  assert.equal(f.calls.some(call=>call.method==="PATCH"),false);
+  f.$("[data-storage-save]").click();
+  await until(()=>f.$("[data-delivery-feedback]").textContent.includes("Automação salva"));
+  assert.equal(f.calls.find(call=>call.method==="PATCH").body.archive_after_upload,true);
+  f.change("[data-storage-field=provider]","github");
+  assert.equal(checkbox.checked,false);
+  assert.equal(checkbox.disabled,true);
+  f.change("[data-storage-field=provider]","drive");
+  f.change("[data-storage-field=archive_after_upload]",true);
+  f.change("[data-storage-field=auto_upload]",false);
+  assert.equal(checkbox.checked,false);
+  assert.equal(checkbox.disabled,true);
+});
+
+test("archived deliveries retain successful uploads, destination links and exact download routes", async t => {
+  const f=await fixture(t);
+  f.jobs.set(A,[
+    job({id:"archived",status:"succeeded",error:null,archived:true,archived_at:"2026-11-20T10:02:00Z",url:"https://drive.google.com/file/d/archive/view"}),
+    job({id:"kept",status:"succeeded",error:null,archived:false,archive_error:"Arquivo em uso <img src=x onerror=alert(1)>",url:"https://drive.google.com/file/d/kept/view"})
+  ]);
+  await f.setVideo(A);
+  assert.match(f.$("[data-delivery-history]").textContent,/Arquivado no Drive · espaço local liberado/);
+  assert.match(f.$("[data-delivery-history]").textContent,/Enviado ao Drive.*cópia local foi preservada/);
+  assert.equal(f.w.document.querySelectorAll("[data-delivery-history] .delivery-badge.is-connected").length,2);
+  assert.equal(f.w.document.querySelectorAll("[data-delivery-history] a").length,2);
+  assert.equal(f.$("[data-delivery-retry]"),null);
+  assert.equal(f.$("[data-delivery-history] img"),null);
+  assert.equal(f.w.StorageDeliveryUI.downloadUrl(media()),media().url+"&download=1");
+});
+
+test("capacity refreshes pending archives and stops after the last confirmation", async t => {
+  let reads=0;
+  const f=await fixture(t,{fastArchivePoll:true,settings:{drive:{configured:true,connected:true}},
+    intercept:(call,{capacity})=>{
+      if (call.pathname!=="/api/storage/capacity") return;
+      reads++;
+      capacity.archive=reads===1 ? {archived_bytes:0,archived_count:0,pending_count:1}
+        : {archived_bytes:20e6,archived_count:1,pending_count:0};
+      return reply(capacity);
+    }});
+  await until(()=>reads===2);
+  await sleep(20);
+  assert.equal(reads,2);
+  assert.match(f.$("[data-archive-total]").textContent,/1 final arquivado no Drive.*20 MB/);
+});
+
+test("completed uploads keep polling only while archiving is pending, then surface preserved local copies", async t => {
+  let reads=0;
+  const f=await fixture(t,{fastArchivePoll:true,intercept:call=>{
+    if (!call.pathname.endsWith("/deliveries")) return;
+    reads++;
+    return reply({jobs:[job({status:"succeeded",error:null,archived:false,
+      archive_pending:reads===1,archive_error:reads===1 ? null : "Aguarde o fim da edição."})]});
+  }});
+  await f.setVideo(A);
+  await until(()=>reads===2);
+  await sleep(20);
+  assert.equal(reads,2);
+  assert.match(f.$("[data-delivery-history]").textContent,/cópia local foi preservada/);
+  assert.equal(f.$("[data-delivery-retry]"),null);
 });
 
 test("failed save keeps server preferences and offers an actionable error", async t => {

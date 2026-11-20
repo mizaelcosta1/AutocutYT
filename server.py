@@ -20,7 +20,7 @@ import time
 from typing import Literal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -45,9 +45,11 @@ from live_preview import start_capture, preview_directory, preview_status, resol
 from composition import LayoutConfig, normalize_layout_config, require_face
 from layout_presets import builtin_presets
 from storage_delivery import StorageDelivery, DeliveryError
-from storage_routes import build_storage_router
+from storage_routes import build_storage_router, DeliveryRequest
+from storage_capacity import capacity_report
+from storage_archive import local_response
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -72,7 +74,9 @@ PASSWORD = os.environ.get("AUTOCLIPS_PASSWORD", "")
 
 @asynccontextmanager
 async def lifespan(_app):
-    STORAGE_DELIVERY.start()
+    service = _storage_service()
+    service.archiver.cleanup_interrupted_restores()
+    service.start()
     try:
         yield
     finally:
@@ -910,7 +914,8 @@ def _current_export(video_id: str, quality: str, *, version: int | None = None) 
         return None
     if version is not None and rendered.get("version") != version:
         return None
-    if not Path(rendered.get("path", "")).is_file():
+    if (not Path(rendered.get("path", "")).is_file()
+            and not _archived_export(video_id, 'timeline', quality, rendered)):
         return None
     if rendered.get("subtitles") and rendered.get("transcript_signature") != _transcript_signature(video_id):
         return None
@@ -1004,7 +1009,7 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
-def view_timeline_export(video_id: str, quality: str, render_id: str | None = None, download: bool = False):
+def view_timeline_export(video_id: str, quality: str, request: Request, render_id: str | None = None, download: bool = False):
     if quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
     with LOCK:
@@ -1014,10 +1019,7 @@ def view_timeline_export(video_id: str, quality: str, render_id: str | None = No
             raise HTTPException(status_code=404, detail="Arquivo nao exportado para a versao atual")
         if render_id and _render_identity(meta) != render_id:
             raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
-    return FileResponse(meta["path"], media_type="video/mp4",
-                        filename=_artifact_result(video_id, 'timeline', quality, _render_identity(meta))['filename'],
-                        content_disposition_type="attachment" if download else "inline",
-                        headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+    return _export_response(request, video_id, 'timeline', quality, meta, download=download)
 
 
 @app.post("/api/maintenance/cleanup")
@@ -1440,14 +1442,18 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         tags = req.tags or clip.get("tags") or ["Shorts", "AutoClips"]
 
         def job():
-            res = upload_youtube_video(
-                CONNECTION_VAULT,
-                final_path,
-                title=title,
-                description=desc,
-                privacy_status=req.privacy_status,
-                tags=tags,
-            )
+            archived = _archived_export(video_id, 'clip', 'final', final_info, clip_id)
+            source = (_storage_service().archiver.temporary_local(archived)
+                      if not final_path.is_file() and archived else nullcontext(final_path))
+            with source as publish_path:
+                res = upload_youtube_video(
+                    CONNECTION_VAULT,
+                    publish_path,
+                    title=title,
+                    description=desc,
+                    privacy_status=req.privacy_status,
+                    tags=tags,
+                )
             with LOCK:
                 m, w, _ = get_manifest(video_id)
                 cur = next((c for c in m["clips"] if c["id"] == clip_id), None)
@@ -1573,7 +1579,7 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")
-def view_rendered(video_id: str, clip_id: str, quality: str, v: str | None = None, download: bool = False):
+def view_rendered(video_id: str, clip_id: str, quality: str, request: Request, v: str | None = None, download: bool = False):
     manifest, _, _ = get_manifest(video_id)
     if not re.fullmatch(r"clip_[0-9a-z_]+", clip_id) or quality not in {"preview", "final"}:
         raise HTTPException(status_code=404)
@@ -1584,11 +1590,8 @@ def view_rendered(video_id: str, clip_id: str, quality: str, v: str | None = Non
         raise HTTPException(409, "Este arquivo foi substituído. Atualize o editor para ver a versão atual.")
     if clip[quality].get("burn") and clip[quality].get("transcript_signature") != _transcript_signature(video_id):
         raise HTTPException(409, "A transcrição mudou. Gere uma nova prévia com as legendas atuais.")
-    return FileResponse(clip[quality]["path"], media_type="video/mp4",
-                        filename=_artifact_result(video_id, 'clip', quality, _render_identity(clip[quality]),
-                                                  clip_id, clip.get('title'))['filename'],
-                        content_disposition_type="attachment" if download else "inline",
-                        headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+    return _export_response(request, video_id, 'clip', quality, clip[quality], clip_id,
+                            clip.get('title'), download=download)
 
 
 @app.get("/api/tasks/{task_id}")
@@ -1838,14 +1841,14 @@ def live_preview_asset(live_id: str, asset: str):
 def _render_identity(meta):
     if not isinstance(meta, dict):
         return ''
-    if meta.get('render_id'):
+    if meta.get('render_id') and not str(meta['render_id']).startswith('legacy-'):
         return meta['render_id']
     # Older exports have no UUID. Keep their download available, bound to the
     # actual file revision, without altering an old manifest or its approvals.
     path = Path(meta.get('path', ''))
     try:
         if not path.is_file():
-            return ''
+            return meta.get('render_id', '')
         info = path.stat()
         version = f'{path.resolve()}:{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}'
         return 'legacy-' + hashlib.sha256(version.encode()).hexdigest()[:16]
@@ -1864,6 +1867,119 @@ def _artifact_result(video_id, kind, quality, render_id, clip_id=None, title=Non
             'render_id': render_id, 'url': url, 'filename': f'{label}-{profile}-{render_id}.mp4'}
 
 
+def _shared_export_path(job):
+    """A legacy pathname can be referenced by several clips or projects."""
+    target = Path(job['source_path']).resolve()
+    expected = (job['video_id'], job['kind'], job.get('clip_id'), job['quality'], job['render_id'])
+
+    def matches(path):
+        return isinstance(path, str) and bool(path) and Path(path).resolve() == target
+
+    def shared(meta, identity):
+        return (isinstance(meta, dict) and matches(meta.get('path'))
+                and (*identity, _render_identity(meta)) != expected)
+
+    entries = catalog()
+    for video_id, item in entries.items():
+        if matches(item.get('path')):
+            return True
+        if item.get('job_path'):
+            manifest_path = Path(item['job_path']) / 'manifest.json'
+            manifest = read_json(manifest_path, None)
+            if manifest_path.exists() and not isinstance(manifest, dict):
+                return True  # Do not remove data while references are unreadable.
+            if isinstance(manifest, dict):
+                if matches(manifest.get('source')):
+                    return True
+                for clip in manifest.get('clips', []):
+                    for quality in ('preview', 'final'):
+                        if shared(clip.get(quality), (video_id, 'clip', clip.get('id'), quality)):
+                            return True
+        if re.fullmatch(r'[0-9a-f]{32}', video_id):
+            records_path = ROOT / 'projects' / video_id / 'timeline_exports.json'
+            records = read_json(records_path, None)
+            if records_path.exists() and not isinstance(records, dict):
+                return True
+            if isinstance(records, dict):
+                for quality in ('preview', 'final'):
+                    if shared(records.get(quality), (video_id, 'timeline', None, quality)):
+                        return True
+    return False
+
+
+@contextmanager
+def _archive_guard(job):
+    """Serialize removal with edits, publishes and opening a download handle."""
+    with LOCK:
+        video_id = job['video_id']
+        busy = (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
+                or any(key[0] == video_id for key in PENDING_PUBLISH))
+        source_path = job.get('source_path')
+        # Existing imported projects may reuse paths. An export declaration
+        # must never make a recording or a preview eligible for removal.
+        protected = _shared_export_path(job)
+        valid = False
+        if not busy:
+            try:
+                if job['kind'] == 'timeline':
+                    doc, _ = _timeline_document(video_id)
+                    records = read_json(_project_folder(video_id) / 'timeline_exports.json', {})
+                    meta = records.get('final', {})
+                    valid = (meta.get('version') == doc['version']
+                             and records.get('preview', {}).get('path') != source_path)
+                else:
+                    manifest, _, _ = get_manifest(video_id)
+                    clip = next((c for c in manifest['clips'] if c['id'] == job['clip_id']), {})
+                    meta = clip.get('final', {})
+                    valid = bool(meta) and manifest.get('source') != source_path and not any(
+                        c.get('preview', {}).get('path') == source_path for c in manifest['clips'])
+                valid = bool(valid and meta.get('render_id') == job['render_id']
+                             and meta.get('path') == job.get('source_path'))
+            except (HTTPException, KeyError, TypeError):
+                valid = False
+        if not busy and (protected or not valid):
+            # A replaced export is still available at its Drive link, but is
+            # no longer the current project file. Do not repeatedly attempt to
+            # remove a protected path or present it as pending forever.
+            current = STORAGE_DELIVERY.jobs.get(job['id'])
+            if current:
+                STORAGE_DELIVERY._update(current, archive_requested=False,
+                    archive_error='A cópia no Drive foi preservada. Este arquivo não é um final atual exclusivo; a liberação local foi cancelada.')
+        yield valid and not busy and not protected
+
+
+def _storage_service():
+    # Late binding also keeps test/reload service replacements isolated.
+    STORAGE_DELIVERY.archiver.guard = _archive_guard
+    return STORAGE_DELIVERY
+
+
+def _archived_export(video_id, kind, quality, meta, clip_id=None, *, owner=None):
+    owner = owner or REQUEST_OWNER.get() or getattr(TASK_CONTEXT, 'delivery_owner', None)
+    if not owner or not isinstance(meta, dict) or not meta.get('render_id'):
+        return None
+    return _storage_service().archiver.found(owner, video_id, kind, quality, meta['render_id'], clip_id)
+
+
+def _export_response(request, video_id, kind, quality, meta, clip_id=None, title=None, *, download=False):
+    filename = _artifact_result(video_id, kind, quality, _render_identity(meta), clip_id, title)['filename']
+    with LOCK:
+        path = Path(meta.get('path', ''))
+        if path.is_file():
+            # Open the handle under the same lock as archiving: a download
+            # already in flight remains valid after its local name is freed.
+            return local_response(path, range_header=request.headers.get('range'),
+                                  download=download, filename=filename)
+        archived = _archived_export(video_id, kind, quality, meta, clip_id)
+    if not archived:
+        raise HTTPException(404, 'Este arquivo não está disponível nesta conta. Gere uma nova exportação.')
+    try:
+        return _storage_service().archiver.response(archived, range_header=request.headers.get('range'),
+                                                   download=download, filename=filename)
+    except DeliveryError as error:
+        raise HTTPException(409, str(error)) from None
+
+
 def _deliver_render(result, path):
     """Queue only successful exports, with an immutable pin before old cleanup.
 
@@ -1875,7 +1991,7 @@ def _deliver_render(result, path):
     if not owner:
         return
     try:
-        job = STORAGE_DELIVERY.enqueue(owner, {**result, 'path': str(path)}, automatic=True)
+        job = _storage_service().enqueue(owner, {**result, 'path': str(path)}, automatic=True)
         if job:
             result['delivery_job'] = job
     except DeliveryError as exc:
@@ -1894,19 +2010,87 @@ def _enqueue_export(owner, video_id, req):
             meta = _current_export(video_id, req.quality, version=doc['version'])
             title = None
         else:
-            manifest, _, _ = get_manifest(video_id)
+            manifest, work, _ = get_manifest(video_id)
             clip = next((c for c in manifest['clips'] if c['id'] == req.clip_id), None)
             meta = clip.get(req.quality) if clip else None
             title = clip.get('title') if clip else None
             if (meta and meta.get('burn')
                     and meta.get('transcript_signature') != _transcript_signature(video_id)):
                 raise HTTPException(409, 'A transcrição mudou. Gere uma nova prévia antes de enviar.')
+        archived = _archived_export(video_id, req.kind, req.quality, meta, req.clip_id, owner=owner)
+        if archived and req.provider == 'drive' and archived['render_id'] == req.render_id:
+            return STORAGE_DELIVERY._public_job(archived)
+        if archived and not Path(meta.get('path', '')).is_file():
+            raise HTTPException(409, 'Este final está arquivado no Drive. Para enviar a outro destino, gere uma nova exportação local; o download atual continua disponível.')
         if not meta or not Path(meta.get('path', '')).is_file():
             raise HTTPException(404, 'Gere este corte antes de enviá-lo.')
         if _render_identity(meta) != req.render_id:
             raise HTTPException(409, 'Este arquivo foi substituído. Atualize o editor antes de enviar.')
+        # Legacy revisions used their inode as an identity. Persist that exact
+        # identity before enabling removal so old download URLs keep working.
+        if (req.quality == 'final' and req.provider == 'drive'
+                and (not meta.get('render_id') or str(meta['render_id']).startswith('legacy-'))
+                and STORAGE_DELIVERY.public_settings(owner)['archive_after_upload']):
+            meta['render_id'] = req.render_id
+            if req.kind == 'timeline':
+                records_file = _project_folder(video_id) / 'timeline_exports.json'
+                records = read_json(records_file, {})
+                records[req.quality] = meta
+                write_json(records_file, records)
+            else:
+                write_json(work / 'manifest.json', manifest)
         artifact = _artifact_result(video_id, req.kind, req.quality, req.render_id, req.clip_id, title)
-        return STORAGE_DELIVERY.enqueue(owner, {**artifact, 'path': meta['path']}, provider=req.provider)
+        return _storage_service().enqueue(owner, {**artifact, 'path': meta['path']}, provider=req.provider)
 
 
-app.include_router(build_storage_router(lambda: STORAGE_DELIVERY, _enqueue_export, lambda video_id: video_info(video_id)))
+def _optimize_drive(owner):
+    backend = _storage_service()
+    capacity = capacity_report(backend, owner)
+    drive = capacity['drive']
+    if not drive['connected']:
+        raise DeliveryError('Conecte o Google Drive do AutoClips para ativar o armazenamento automático.')
+    if drive['status'] != 'ready':
+        raise DeliveryError(drive.get('error') or 'Não foi possível conferir o espaço do Google Drive.')
+    if drive['free_bytes'] == 0:
+        raise DeliveryError('O Google Drive está cheio. Libere espaço na sua conta antes de ativar o arquivamento.')
+    settings = backend.configure(owner, {'provider': 'drive', 'auto_upload': True,
+                                         'archive_after_upload': True, 'qualities': ['final']})
+    candidates = []
+    skipped_busy = 0
+    with LOCK:
+        for video_id in catalog():
+            if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
+                    or any(key[0] == video_id for key in PENDING_PUBLISH)):
+                skipped_busy += 1
+                continue
+            try:
+                doc, _ = _timeline_document(video_id)
+                meta = _current_export(video_id, 'final', version=doc['version'])
+                if meta and _render_identity(meta):
+                    candidates.append((video_id, DeliveryRequest(kind='timeline', quality='final',
+                                                                 render_id=_render_identity(meta), provider='drive')))
+            except HTTPException:
+                pass
+            try:
+                manifest, _, _ = get_manifest(video_id)
+                for clip in manifest['clips']:
+                    meta = clip.get('final')
+                    if meta and _render_identity(meta):
+                        candidates.append((video_id, DeliveryRequest(kind='clip', clip_id=clip['id'], quality='final',
+                                                                     render_id=_render_identity(meta), provider='drive')))
+            except HTTPException:
+                pass
+    summary = {'queued': 0, 'already_archived': 0, 'skipped_busy': skipped_busy, 'errors': []}
+    for video_id, request in candidates:
+        try:
+            job = _enqueue_export(owner, video_id, request)
+            summary['already_archived' if job.get('archived') else 'queued'] += 1
+        except (DeliveryError, HTTPException) as error:
+            message = error.detail if isinstance(error, HTTPException) else str(error)
+            summary['errors'].append({'video_id': video_id, 'message': message})
+    backend.wake.set()
+    return {'settings': settings, 'summary': summary}
+
+
+app.include_router(build_storage_router(_storage_service, _enqueue_export,
+                                       lambda video_id: video_info(video_id), _optimize_drive))

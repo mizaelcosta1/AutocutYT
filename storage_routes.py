@@ -11,12 +11,14 @@ from starlette.concurrency import run_in_threadpool
 
 import studio_auth
 from storage_delivery import DeliveryError
+from storage_capacity import capacity_report
 
 
 class DeliverySettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     auto_download: StrictBool | None = None
     auto_upload: StrictBool | None = None
+    archive_after_upload: StrictBool | None = None
     provider: Literal['drive', 'github'] | None = None
     qualities: list[Literal['preview', 'final']] | None = Field(default=None, min_length=1, max_length=2)
 
@@ -60,13 +62,37 @@ def _call(fn, *args, **kwargs):
         raise HTTPException(422, str(exc)) from None
 
 
-def build_storage_router(service, enqueue, validate_video):
+def build_storage_router(service, enqueue, validate_video, optimize=None):
     """Dependencies are callables so tests and app reloads share no stale vault."""
     router = APIRouter(dependencies=[Depends(_same_origin)])
 
     @router.get('/api/storage/settings')
     def settings(owner=Depends(_owner)):
         return _call(service().public_settings, owner)
+
+    @router.get('/api/storage/capacity')
+    def capacity(owner=Depends(_owner)):
+        backend = service()
+        report = _call(capacity_report, backend, owner)
+        settings = backend.public_settings(owner)
+        archiving = settings['archive_after_upload'] and settings['auto_upload'] and settings['provider'] == 'drive'
+        with backend.lock:
+            archived = [job for job in backend.jobs.values()
+                        if job['owner'] == owner and job.get('archived')]
+            report['archive'] = {'archived_count': len(archived),
+                                 'archived_bytes': sum(job['total_bytes'] for job in archived),
+                                 'pending_count': sum(1 for job in backend.jobs.values()
+                                                      if job['owner'] == owner and archiving
+                                                      and job.get('archive_requested') and not job.get('archived')
+                                                      and not job.get('archive_error')
+                                                      and job['status'] in {'queued', 'running', 'retry_wait', 'succeeded'})}
+        return report
+
+    @router.post('/api/storage/optimize-drive')
+    def optimize_drive(owner=Depends(_owner)):
+        if optimize is None:
+            raise HTTPException(503, 'A otimização de armazenamento não está disponível.')
+        return _call(optimize, owner)
 
     @router.patch('/api/storage/settings')
     def update_settings(patch: DeliverySettings, owner=Depends(_owner)):

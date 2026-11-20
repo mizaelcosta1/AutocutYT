@@ -1,4 +1,16 @@
-# AutoClips AI Studio 0.8.1 — Google, composição visual e YouTube
+# AutoClips AI Studio 0.8.2 — armazenamento no Google Drive
+
+## Mais espaço para os cortes finalizados
+
+Em **Conexões e modelos → Downloads e armazenamento**, conecte sua conta Google Drive e clique em **Usar Drive e liberar espaço**. A ação ativa o envio dos próximos finais e inclui os finais atuais já gerados na biblioteca. A quota é consultada na conta autorizada; o painel apresenta separadamente o **espaço de edição** do servidor e o **espaço disponível no Google Drive**.
+
+O arquivamento só libera a cópia local de um final após conferir tamanho, SHA-256, pasta, identidade do envio e permissão de download. Uma referência durável é salva antes da remoção. Downloads e players usam os mesmos botões e passam a receber o vídeo por streaming do Drive, inclusive ao avançar na reprodução. Publicar um final arquivado no YouTube recupera uma cópia temporária verificada e a remove ao terminar.
+
+Fontes, gravações originais, prévias e legendas permanecem disponíveis para edição. Um arquivo em processamento ou reservado para outro envio aguarda; falhas de rede, quota, permissão ou integridade preservam a cópia local. Desligar a automação interrompe os arquivamentos pendentes. Desconectar o Drive preserva os vídeos remotos, mas será necessário reconectar a mesma conta e pasta para acessar os finais que já foram arquivados.
+
+**O Drive não aumenta o disco temporário do Railway.** A instalação auditada tem volume de 500 MB; esta atualização não altera plano nem tamanho do volume. Lives longas e arquivos que não caibam na área de edição ainda exigem um volume maior ou outro desenho de processamento. A quantidade de espaço livre no Drive depende da conta; não existe promessa de armazenamento ilimitado.
+
+Validação e limites desta entrega: [qa/QA_v0.8.2.md](qa/QA_v0.8.2.md). A automação depende da autorização do Drive dentro do próprio AutoClips; a conexão do ChatGPT e o login Google não substituem essa autorização.
 
 ## Editor visual organizado
 
@@ -12,7 +24,7 @@ A seleção de rosto e gameplay edita regiões da gravação original; trocar um
 
 Depois de entrar, use **Conexões e modelos → YouTube** para conectar o canal e autorizar o envio. **Verificar canal** consulta a API oficial e mostra o canal de destino na própria tela. Login e autorização do canal são etapas distintas. Cada envio exige a confirmação do clipe e começa com privacidade **Privado**. As tentativas de conexão ficam vinculadas à conta do estúdio que as iniciou.
 
-Validação desta versão: **397 testes de backend aprovados, 3 testes opcionais ignorados e 101 testes DOM aprovados**. O teste com conta real depende da confirmação de identidade e das permissões na tela do Google; esses testes automatizados não comprovam autorização ou upload real. Detalhes e limites em [qa/QA_v0.8.1.md](qa/QA_v0.8.1.md).
+Validação anterior, v0.8.1: **397 testes de backend aprovados, 3 testes opcionais ignorados e 101 testes DOM aprovados**. O teste com conta real depende da confirmação de identidade e das permissões na tela do Google; esses testes automatizados não comprovam autorização ou upload real. Detalhes e limites em [qa/QA_v0.8.1.md](qa/QA_v0.8.1.md).
 
 ## Downloads e envios dos cortes
 
@@ -40,7 +52,7 @@ A autorização do conector GitHub no ChatGPT não é uma credencial do aplicati
 
 A automação começa desativada. Cada envio prende a versão exata do arquivo por hard link no mesmo volume, calcula SHA-256 e vincula conta, destino e ID de renderização. A fila e os dados de retomada ficam criptografados em `storage_outbox/jobs.enc`; credenciais usam o cofre existente. O worker serial só inicia no ciclo de vida da aplicação. Drive usa upload retomável; GitHub confere nome, tamanho e SHA-256 antes de repetir um envio de resultado incerto. Há até três tentativas automáticas com espera; depois, o histórico oferece nova tentativa manual.
 
-O volume continua finito. Uma exportação reservada ocupa espaço enquanto seu envio não conclui ou é cancelado, mesmo se outro render substituir seu arquivo no editor. O sucesso do envio não apaga o original nem a cópia atual da biblioteca. Fechar o navegador interrompe a possibilidade de baixar para o dispositivo, mas não a fila de upload do servidor. As cotas e permissões das contas externas continuam valendo.
+O volume continua finito. Uma exportação reservada ocupa espaço enquanto seu envio não conclui ou é cancelado, mesmo se outro render substituir seu arquivo no editor. O envio simples mantém a cópia local. Com **Arquivar finais no Drive e liberar espaço local** ativado, somente a cópia local do final confirmado é liberada; os arquivos de origem são preservados. Fechar o navegador interrompe a possibilidade de baixar para o dispositivo, mas não a fila de upload do servidor. As cotas e permissões das contas externas continuam valendo.
 
 Nenhuma dependência nova de produção foi adicionada; o recurso usa `httpx`, `cryptography`, FastAPI e as bibliotecas padrão já instaladas. Detalhes de validação: [qa/QA_v0.7.7.md](qa/QA_v0.7.7.md).
 
