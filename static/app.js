@@ -43,11 +43,11 @@
     const units = ["B", "KB", "MB", "GB", "TB"];
     let i = 0;
     let val = bytes;
-    while (val >= 1024 && i < units.length - 1) {
-      val /= 1024;
+    while (val >= 1000 && i < units.length - 1) {
+      val /= 1000;
       i++;
     }
-    return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    return `${val.toLocaleString("pt-BR", {maximumFractionDigits: i === 0 ? 0 : 1})} ${units[i]}`;
   }
 
   function escapeHtml(str) {
