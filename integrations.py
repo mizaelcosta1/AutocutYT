@@ -690,8 +690,11 @@ def _identity(provider: str, token: str, client_id: str) -> dict:
     return {"id": "", "name": SOCIAL[provider]["label"] + " conectada"}
 
 
-def build_router(vault: Vault) -> APIRouter:
+def build_router(vault: Vault, *, resolve=None) -> APIRouter:
     router = APIRouter()
+    default_vault = vault
+    if resolve is None:
+        resolve = lambda: default_vault
 
     @router.get("/api/ai/catalog")
     def ai_catalog():
@@ -699,12 +702,14 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/api/ai/providers")
     def ai_providers():
+        vault = resolve()
         data = vault.read()
         return {"providers": [public_provider(x) for x in data["providers"].values()],
                 "selected": data.get("selected", {}), "stages": STAGES}
 
     @router.post("/api/ai/providers", status_code=201)
     def add_provider(form: NewProvider):
+        vault = resolve()
         kind = form.kind
         try:
             preset = PROVIDER_PRESETS.get(form.preset_id) if form.preset_id else None
@@ -742,6 +747,7 @@ def build_router(vault: Vault) -> APIRouter:
     def get_models(provider_id: str, q: str = Query("", max_length=100),
                    cost: Literal["free", "paid", "unknown", "all"] = "all",
                    offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+        vault = resolve()
         item = vault.read()["providers"].get(provider_id)
         if not item:
             raise HTTPException(404, "Provedor nao cadastrado")
@@ -758,6 +764,7 @@ def build_router(vault: Vault) -> APIRouter:
     @router.post("/api/ai/providers/{provider_id}/refresh")
     def refresh_models(provider_id: str):
         # Do not hold the vault lock during network I/O (OAuth and edits share it).
+        vault = resolve()
         original = vault.read()["providers"].get(provider_id)
         if not original:
             raise HTTPException(404, "Provedor não cadastrado")
@@ -785,6 +792,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.post("/api/ai/providers/{provider_id}/free-defaults")
     def free_defaults(provider_id: str):
+        vault = resolve()
         with vault.lock:
             state = vault.read()
             item = state["providers"].get(provider_id)
@@ -799,6 +807,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.post("/api/ai/providers/{provider_id}/test")
     def test_free_model(provider_id: str):
+        vault = resolve()
         item = vault.read()["providers"].get(provider_id)
         if not item:
             raise HTTPException(404, "Provedor não cadastrado")
@@ -816,6 +825,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.delete("/api/ai/providers/{provider_id}")
     def delete_provider(provider_id: str):
+        vault = resolve()
         with vault.lock:
             state = vault.read()
             if state["providers"].pop(provider_id, None) is None:
@@ -828,6 +838,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.post("/api/ai/selection")
     def choose_model(form: ModelSelection):
+        vault = resolve()
         with vault.lock:
             state = vault.read()
             item = state["providers"].get(form.provider_id)
@@ -847,6 +858,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/api/social/accounts")
     def social_accounts():
+        vault = resolve()
         current = vault.read().get("social", {})
         result = []
         for ident, conf in SOCIAL.items():
@@ -870,6 +882,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/api/social/youtube/channel")
     def youtube_channel():
+        vault = resolve()
         try:
             token, saved_account = get_youtube_access_token(vault, require_upload=False)
         except ValueError as exc:
@@ -885,6 +898,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/auth/{provider}/start")
     def auth_start(provider: str, request: Request, permission: Literal["view", "publish"] = "view"):
+        vault = resolve()
         try:
             conf, client_id, _ = _social_settings(provider)
             owner = _oauth_studio_owner(request)
@@ -924,6 +938,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.get("/auth/{provider}/callback")
     def auth_callback(provider: str, request: Request, code: str = "", state: str = "", error: str = ""):
+        vault = resolve()
         if provider not in SOCIAL:
             raise HTTPException(404, "Rede nao reconhecida")
         try:
@@ -985,6 +1000,7 @@ def build_router(vault: Vault) -> APIRouter:
 
     @router.post("/api/social/{provider}/disconnect")
     def social_disconnect(provider: str):
+        vault = resolve()
         if provider not in SOCIAL:
             raise HTTPException(404, "Rede nao reconhecida")
         with vault.lock:
