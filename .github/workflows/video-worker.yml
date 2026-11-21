@@ -1,0 +1,94 @@
+name: AutoClips B2 video analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner_hash:
+        description: SHA-256 namespace of the authenticated account
+        required: true
+        type: string
+      video_id:
+        description: AutoClips video identifier
+        required: true
+        type: string
+      source_key:
+        description: users/<owner_hash>/originals/<video_id>/<filename>
+        required: true
+        type: string
+      clips:
+        description: Number of candidate clips (1-20)
+        required: false
+        default: "5"
+        type: string
+      seconds:
+        description: Target clip duration in seconds (5-600)
+        required: false
+        default: "45"
+        type: string
+      transcribe:
+        description: Run Whisper tiny transcription
+        required: false
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [autoclips.analyze]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoclips-analysis-${{ github.event.client_payload.owner_hash || inputs.owner_hash }}-${{ github.event.client_payload.video_id || inputs.video_id }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout application code
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt boto3
+          python -m pip install -r requirements-transcription.txt
+
+      - name: Analyze private video from B2
+        id: analyze
+        env:
+          B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+          B2_REGION: ${{ secrets.B2_REGION }}
+          B2_BUCKET: ${{ secrets.B2_BUCKET }}
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+        run: python workers/actions_video_worker.py
+
+      - name: Publish non-sensitive job summary
+        if: success()
+        env:
+          RESULT: ${{ steps.analyze.outputs.result_json }}
+        run: |
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULT"])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("## AutoClips analysis completed\n\n")
+              f.write(f"- Video: `{data['video_id']}`\n")
+              f.write(f"- Candidate clips: {data['clips']}\n")
+              f.write(f"- Duration: {data['duration_seconds']:.1f}s\n")
+              f.write(f"- Manifest: `{data['manifest_key']}`\n")
+          PY
