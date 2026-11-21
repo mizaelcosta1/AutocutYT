@@ -18,4 +18,4 @@ O espaço do Google Drive para finais arquivados continua separado. A instalaç�
 
 ## Validação
 
-Execute `python -m pytest -q` com as dependências da aplicação e pytest. Para o teste ponta a ponta instale também Playwright, aiosmtpd, Chromium do Playwright, OpenSSL e FFmpeg e execute `python qa/public_studio_browser.py`. O teste inicia um SMTP local com STARTTLS, confirma o código, entra novamente, envia um MP4 e abre o editor nos três formatos. A entrega com um domínio real precisa ser validada no ambiente de homologação.
+Execute `python -m pytest -q` com as dependências da aplicação e pytest. Para o teste ponta a ponta instale também Playwright, aiosmtpd, Chromium do Playwright, OpenSSL e FFmpeg e execute `python scripts/prepare_runtime_assets.py --hls-only` seguido de `python qa/public_studio_browser.py`. O teste inicia um SMTP local com STARTTLS, confirma o código, entra novamente, envia um MP4 e abre o editor nos três formatos. A entrega com um domínio real precisa ser validada no ambiente de homologação.

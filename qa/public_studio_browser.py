@@ -76,7 +76,13 @@ def main():
         browser = pw.chromium.launch(executable_path=os.getenv('AUTOCLIPS_TEST_CHROMIUM') or None)
         stack.callback(browser.close)
         context = browser.new_context(ignore_https_errors=True,viewport={'width':1440,'height':940})
+        failed_responses = []
+        def watch(page):
+            page.on('response', lambda response: failed_responses.append(response.url)
+                    if response.status >= 500 else None)
+
         page = context.new_page()
+        watch(page)
         page.goto(url)
         page.get_by_role('button',name='Criar uma conta').click()
         page.get_by_label('E-mail',exact=True).fill('editor@example.org')
@@ -110,6 +116,7 @@ def main():
             ('desktop', {'viewport':{'width':1440,'height':900}})]:
             with browser.new_context(**options,ignore_https_errors=True,storage_state=saved) as ctx:
                 p = ctx.new_page()
+                watch(p)
                 p.goto(url)
                 expect(p.locator('html')).to_have_attribute('data-device',device)
                 assert p.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -125,6 +132,7 @@ def main():
                 expect(p.locator('html')).to_have_attribute('data-device',device)
                 assert p.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 print(device, 'OK')
+        assert not failed_responses, failed_responses
         print('Verified STARTTLS email, confirmation, logout, password login, upload and editor.')
 
 

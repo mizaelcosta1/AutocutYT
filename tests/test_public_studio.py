@@ -61,7 +61,9 @@ def test_registration_and_private_volume(studio):
     first.write_bytes(b'private')
     vid = 'a' * 32
     server.write_json(ws.INDEX, {vid: {'id': vid, 'name': first.name, 'path': str(first), 'created_at': 'now'}})
-    assert alice.get(f'/api/videos/{vid}/stream').content == b'private'
+    stream = alice.get(f'/api/videos/{vid}/stream')
+    assert stream.content == b'private'
+    assert stream.headers['cache-control'] == 'private, no-store'
     assert bob.get('/api/videos').json() == {'videos': []}
     assert bob.get(f'/api/videos/{vid}/stream').status_code == 404
     ws.CONNECTION_VAULT.save({'selected': {}, 'providers': {}, 'social': {}, 'pending': {}, 'private': 'alice'})

@@ -208,6 +208,8 @@ async def basic_auth(request: Request, call_next):
         marker = REQUEST_OWNER.set(owner)
         try:
             response = await call_next(request)
+            if email and public_accounts.public_ready() and not request.url.path.startswith('/static/'):
+                response.headers['Cache-Control'] = 'private, no-store'
             if workspace_token is not None and request.method in {'POST', 'PATCH'} and response.status_code < 400:
                 if request.url.path.startswith('/api/storage/'):
                     _wake_account_delivery()
