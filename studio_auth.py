@@ -12,6 +12,8 @@ from html import escape
 import os
 import re
 import secrets
+from pathlib import Path
+import public_accounts
 from urllib.parse import urlencode, urlsplit
 
 import httpx
@@ -42,12 +44,28 @@ def settings():
     }
 
 
-def configured():
+def session_configured():
     cfg = settings()
     parsed = urlsplit(cfg['public_url'])
-    return bool(cfg['client_id'] and cfg['client_secret'] and len(cfg['secret']) >= 32
-                and cfg['allowed'] and parsed.scheme == 'https' and parsed.netloc
-                and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment)
+    return bool(len(cfg['secret']) >= 32 and parsed.scheme == 'https' and parsed.netloc
+                and not parsed.username and not parsed.password and parsed.path in {'', '/'}
+                and not parsed.query and not parsed.fragment)
+
+
+def google_configured():
+    cfg = settings()
+    return bool(session_configured() and cfg['client_id'] and cfg['client_secret']
+                and (cfg['allowed'] or public_accounts.enabled()))
+
+
+def configured():
+    return google_configured() or public_accounts.public_ready()
+
+
+def open_session(response, email):
+    response.set_cookie(SESSION_COOKIE, serializer('studio-session').dumps({'email': email}),
+                        max_age=COOKIE_MAX_AGE, httponly=True, secure=True, samesite='lax', path='/')
+    return _auth_headers(response)
 
 
 def serializer(salt):
@@ -69,7 +87,7 @@ def read_session(request):
     except (BadSignature, SignatureExpired, TypeError):
         return None
     email = str(session.get('email', '')).strip().casefold()
-    if email in settings()['allowed']:
+    if email and (public_accounts.public_ready() or email in settings()['allowed']):
         return {'email': email}
     return None
 
@@ -155,13 +173,18 @@ def login(request: Request):
     if read_session(request):
         return _auth_headers(RedirectResponse(next_path, status_code=303))
     ready = configured()
+    if public_accounts.public_ready():
+        page = (Path(__file__).parent / 'static' / 'access.html').read_text()
+        page = page.replace('{{google_url}}', escape('/login/google?' + urlencode({'next': next_path}), quote=True))
+        page = page.replace('{{google}}', '' if google_configured() else 'hidden').replace('{{next}}', escape(next_path, quote=True))
+        return _auth_headers(HTMLResponse(page))
     return _auth_headers(HTMLResponse(login_html(ready, next_path), status_code=200 if ready else 503))
 
 
 @router.get('/login/google')
 def login_google(request: Request):
     next_path = safe_next(request.query_params.get('next', '/'))
-    if not configured():
+    if not google_configured():
         return _auth_headers(RedirectResponse(login_url(next_path), status_code=303))
     return _start_google(next_path=next_path)
 
@@ -169,7 +192,7 @@ def login_google(request: Request):
 @router.get('/auth/storage/drive/start')
 def connect_google_drive(request: Request):
     session = read_session(request)
-    if not session or not DRIVE_CONNECT_HANDLER:
+    if not google_configured() or not session or not DRIVE_CONNECT_HANDLER:
         raise HTTPException(401, 'Entre com Google antes de conectar o Drive.')
     return _start_google(purpose='drive', email=session['email'])
 
@@ -243,7 +266,7 @@ def login_google_callback(request: Request, code: str = '', state: str = '', err
     if identity.get('email_verified') not in {True, 'true'}:
         return _login_error(request, 403, 'O Google não confirmou o e-mail', pending)
     email = str(identity.get('email', '')).strip().casefold()
-    if email not in settings()['allowed']:
+    if not email or (not public_accounts.public_ready() and email not in settings()['allowed']):
         return _login_error(request, 403, 'Esta conta Google não tem acesso ao AutoClips', pending)
     if pending.get('purpose') == 'drive':
         session = read_session(request)

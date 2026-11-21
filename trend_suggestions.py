@@ -291,7 +291,7 @@ class SuggestionsService:
             }
 
 
-def build_router(root: Path, vault):
+def build_router(root: Path, vault, *, resolve=None):
     router = APIRouter()
     service = SuggestionsService(root, vault)
 
@@ -299,6 +299,8 @@ def build_router(root: Path, vault):
     def trending(period: str = Query("daily", pattern="^(daily|weekly)$"),
                  region: str = Query("BR", pattern="^[A-Z]{2}$"),
                  refresh: bool = False):
-        return service.get(period=period, region=region, refresh=refresh)
+        ws = resolve() if resolve else None
+        backend = ws.suggestions if ws else service
+        return backend.get(period=period, region=region, refresh=refresh)
 
     return router

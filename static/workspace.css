@@ -1,0 +1,43 @@
+/* Shared controls for the sign-in flow and workspace-specific navigation. */
+.access {color-scheme:dark;min-height:100svh;margin:0;display:grid;place-items:center;background:#111114;color:#f8f6f5;font:16px/1.5 system-ui,sans-serif}
+.access * {box-sizing:border-box}
+.access-card {width:min(420px,calc(100% - 32px));padding:clamp(20px,4vw,36px);border:1px solid #424046;border-radius:18px;background:#1c1b1f;margin:24px 0}
+.wordmark {display:inline-flex;align-items:center;gap:6px;color:#fff;text-decoration:none;font-weight:750;letter-spacing:-.035em}
+.wordmark span {background:#ff705c;color:#230d09;border-radius:8px;padding:4px 9px;margin-right:4px}.wordmark strong {font-weight:450;color:#ccc4c4}
+.access-card h1 {font-size:clamp(26px,4vw,34px);line-height:1.1;margin:32px 0 9px;letter-spacing:-.045em}
+.access-card p {color:#c8c3c6;margin:0 0 20px}.access-card label {display:block;font-weight:600;margin:14px 0 6px}
+.access-card input {width:100%;border:1px solid #66646d;border-radius:8px;background:#111114;color:#fff;padding:11px 12px;font:inherit}
+.access-card button,.alternative {width:100%;min-height:46px;border-radius:8px;font:inherit;font-weight:650;cursor:pointer}
+#submit-access {background:#ff705c;color:#24100e;border:0}.text-button {border:0;background:transparent;color:#ffac9e}
+#feedback {font-size:.9rem;color:#ffcdc5;margin:12px 0}.access [hidden] {display:none!important}
+.google-access {border-top:1px solid #46434a;padding-top:14px;margin-top:4px}.alternative {display:grid;place-items:center;color:#fff;text-decoration:none;border:1px solid #68636a}
+.access :focus-visible,.source-picker button:focus-visible {outline:3px solid #ffab97;outline-offset:3px}
+.source-picker,.account-exit {display:none}
+.hero.intro {padding:22px 24px;background:#19191c;border:1px solid #39383d}.intro h1 {margin:0 0 6px;font-size:clamp(1.65rem,3vw,2.4rem);letter-spacing:-.045em}.intro p {margin:0}
+[data-device=tablet] .shell {display:block}
+[data-device=tablet] .sidebar {position:sticky;z-index:42;top:0;width:100%;height:auto;display:flex;flex-direction:row;align-items:center;padding:8px 16px;gap:6px;overflow-x:auto}
+[data-device=tablet] .sidebar .brand {padding:0 8px 0 0}
+[data-device=tablet] .sidebar :is(.side-label,.side-info,.side-spacer,.sidebar-foot,.brand small) {display:none}
+[data-device=tablet] .nav {white-space:nowrap;min-height:44px;padding:8px 10px}
+[data-device=tablet] .topbar {position:static}
+[data-device=tablet] .mobile-tabs {display:none}
+[data-device=tablet] .source-grid.three-cols {display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+[data-device=tablet] .upload-panel {grid-column:1/-1}
+[data-device=phone] .sidebar {display:none}
+[data-device=phone] .mobile-tabs {display:grid;position:fixed;inset:auto 0 0;grid-template-columns:repeat(5,minmax(0,1fr));background:#17171a;border-top:1px solid #454449;padding:5px 2px max(5px,env(safe-area-inset-bottom));z-index:45}
+[data-device=phone] .mobile-tabs button {display:grid;justify-items:center;align-content:center;gap:2px;min-height:44px;font-size:.73rem;padding:2px;background:transparent;color:#ccc}
+[data-device=phone] .mobile-tabs .active {color:#ffa393;background:#36221f}
+[data-device=phone] .source-grid.three-cols {display:block}
+[data-device=phone] .source-picker {display:flex;gap:8px;margin:16px 0 10px}
+.source-picker button {flex:1;background:#202024;color:#e5e2e0;min-height:44px;border-radius:10px;border:1px solid #454449}
+.source-picker button[aria-pressed=true] {border-color:#ff8775;color:#ffab9c}
+[data-device=phone] .source-grid[data-source] > article {display:none}
+[data-device=phone] .source-grid[data-source=file] .upload-panel,[data-device=phone] .source-grid[data-source=link] .vod-panel,[data-device=phone] .source-grid[data-source=live] .live-panel {display:block}
+[data-device=phone] main {padding-bottom:100px}
+[data-device=phone] .mobile-brand {display:block}
+[data-device=phone] .platforms {display:none}
+[data-device=phone] .editor-layout,[data-device=phone] .upper-grid {grid-template-columns:minmax(0,1fr)}
+[data-device=phone] .topbar,[data-device=tablet] .topbar {display:flex;align-items:center;justify-content:space-between}
+[data-device=phone] .account-exit,[data-device=tablet] .account-exit {display:inline-flex;align-items:center;min-height:44px;color:#e5e2e0}
+[data-device=desktop] .shell {max-width:1760px;margin:auto}
+[data-device=desktop] .source-grid.three-cols {grid-template-columns:repeat(3,minmax(0,1fr))}

@@ -1,0 +1,10 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151518"><title>Acessar o estúdio · AutoClips</title><link rel="stylesheet" href="/static/workspace.css"><script src="/static/device.js"></script><script defer src="/static/access.js"></script></head>
+<body class="access"><main class="access-card" data-next="{{next}}"><a class="wordmark" href="/login"><span aria-hidden="true">▶</span> AutoClips <strong>Studio</strong></a>
+<h1 id="form-title">Entrar no estúdio</h1><p id="form-help">Acesse seus vídeos, cortes e exportações.</p>
+<form id="access-form"><label for="email">E-mail</label><input id="email" type="email" autocomplete="username" maxlength="254" required>
+<div id="password-row"><label for="password">Senha</label><input id="password" type="password" autocomplete="current-password" maxlength="256" required></div>
+<div id="code-row" hidden><label for="code">Código de confirmação</label><input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" disabled></div>
+<p id="feedback" role="status" aria-live="polite"></p><button id="submit-access" type="submit">Entrar</button></form>
+<button id="switch-access" class="text-button" type="button">Criar uma conta</button><button hidden id="resend" class="text-button" type="button">Reenviar código</button>
+<div class="google-access" {{google}}><a href="{{google_url}}" class="alternative">Entrar com Google</a></div>
+</main></body></html>
