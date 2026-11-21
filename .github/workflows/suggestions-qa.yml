@@ -1,0 +1,45 @@
+name: AutoClips suggestions regression
+on:
+  push:
+    branches: [main, 'feature/sugestoes-trends-v083']
+    paths:
+      - 'trend_suggestions.py'
+      - 'server.py'
+      - 'static/index.html'
+      - 'static/suggestions.js'
+      - 'static/suggestions.css'
+      - 'tests/test_trend_suggestions.py'
+      - 'qa/test_suggestions_dom.cjs'
+      - '.github/workflows/suggestions-qa.yml'
+  pull_request:
+    paths:
+      - 'trend_suggestions.py'
+      - 'server.py'
+      - 'static/index.html'
+      - 'static/suggestions.js'
+      - 'static/suggestions.css'
+      - 'tests/test_trend_suggestions.py'
+      - 'qa/test_suggestions_dom.cjs'
+jobs:
+  suggestions-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install backend test dependencies
+        run: python -m pip install --no-cache-dir pytest httpx fastapi
+      - name: Validate trends and historical aggregation
+        run: python -m pytest -q tests/test_trend_suggestions.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install DOM test dependency
+        run: |
+          npm init -y
+          npm install --no-audit --no-fund jsdom@26
+      - name: Syntax-check UI
+        run: node --check static/suggestions.js
+      - name: Validate thumbnail previews and suggestions
+        run: node --test qa/test_suggestions_dom.cjs
