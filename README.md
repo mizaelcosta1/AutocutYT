@@ -1,4 +1,8 @@
-# AutoClips AI Studio 0.8.2 — armazenamento no Google Drive
+# AutoClips AI Studio 0.9.0
+
+[Cadastro público, armazenamento e homologação](docs/ACESSO_PUBLICO.md)
+
+## AutoClips AI Studio 0.8.2 — armazenamento no Google Drive
 
 ## Mais espaço para os cortes finalizados
 

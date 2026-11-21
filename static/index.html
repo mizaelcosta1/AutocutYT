@@ -4,11 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
-  <title>AutoClips AI Studio v0.8.3</title>
+  <title>AutoClips AI Studio v0.9.0</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/layout-editor.css">
   <link rel="stylesheet" href="/static/delivery.css">
   <link rel="stylesheet" href="/static/suggestions.css">
+  <link rel="stylesheet" href="/static/workspace.css">
+  <script src="/static/device.js"></script>
 </head>
 <body>
 <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
@@ -23,26 +25,20 @@
     <button class="nav" data-tab="connections"><span aria-hidden="true">◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="storage-dot" aria-hidden="true"></div><div><b>Armazenamento</b><p id="storage-info">Consultando espaço disponível...</p></div></div>
-    <div class="sidebar-foot">AutoClips Studio · v0.8.3<br><a href="/logout">Sair da conta</a></div>
+    <div class="sidebar-foot">AutoClips Studio · v0.9.0<br><a href="/logout">Sair da conta</a></div>
   </aside>
   <div class="main-wrap">
     <header class="topbar">
       <div class="mobile-brand"><span aria-hidden="true">▶</span> <b>AutoClips AI</b></div>
-      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.8.3</span>
+      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.9.0</span>
       <div class="platforms" aria-label="Plataformas compatíveis"><span class="pill"><i class="dot tw" aria-hidden="true"></i>Twitch</span><span class="pill"><i class="dot yt" aria-hidden="true"></i>YouTube</span><span class="pill"><i class="dot kick" aria-hidden="true"></i>Kick</span></div>
+      <a class="account-exit" href="/logout">Sair da conta</a>
     </header>
     <main id="main-content" tabindex="-1">
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
       <section id="sources" class="page active" aria-labelledby="sources-title">
-        <div class="hero">
-          <div class="hero-copy"><span class="overline">DO VÍDEO AO SEU PRÓXIMO CLIPE</span><h1 id="sources-title">Grave. Recorte.<br><span>Dê voz aos seus momentos.</span></h1><p>Comece com um arquivo, um link ou uma live. Depois, escolha os cortes, personalize as legendas e revise o resultado.</p></div>
-          <ol class="hero-steps" aria-label="Etapas de criação">
-            <li><span>01</span><div><b>Importe ou grave</b><small>Seu conteúdo no estúdio</small></div></li>
-            <li><span>02</span><div><b>Edite e legende</b><small>Cortes com a sua identidade</small></div></li>
-            <li><span>03</span><div><b>Revise e exporte</b><small>Você aprova o resultado</small></div></li>
-          </ol>
-        </div>
-        <div class="section-heading"><div><span class="overline">COMECE AQUI</span><h2>De onde vem seu vídeo?</h2></div></div>
+        <div class="hero intro"><div><h1 id="sources-title">Novo projeto</h1><p>Escolha um arquivo, importe um link ou grave uma live.</p></div></div>
+        <div class="source-picker" role="group" aria-label="Origem do vídeo"><button type="button" data-source-choice="file" aria-pressed="true">Arquivo</button><button type="button" data-source-choice="link" aria-pressed="false">Link</button><button type="button" data-source-choice="live" aria-pressed="false">Live</button></div>
         <div class="source-grid three-cols">
           <article class="panel upload-panel">
             <div class="panel-head"><div class="panel-icon" aria-hidden="true">↥</div><div><h3>Enviar arquivo</h3><p>Do celular ou computador</p></div></div>

@@ -6,6 +6,12 @@ Cloud access requires the Google sign-in variables documented in README.md.
 from __future__ import annotations
 
 import base64
+import sys
+from functools import partial
+import account_workspaces
+import public_accounts
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 import hashlib
 import json
 import math
@@ -21,10 +27,11 @@ from typing import Literal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
 from pydantic import BaseModel, Field, ConfigDict, field_validator
@@ -50,7 +57,7 @@ from storage_capacity import capacity_report
 from storage_archive import local_response
 from trend_suggestions import build_router as build_suggestions_router
 
-APP_VERSION = "0.8.3"
+APP_VERSION = "0.9.0"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -78,16 +85,26 @@ async def lifespan(_app):
     service = _storage_service()
     service.archiver.cleanup_interrupted_restores()
     service.start()
+    if public_accounts.enabled():
+        ACCOUNTS.start(_storage_service)
     try:
         yield
     finally:
+        ACCOUNTS.stop()
         STORAGE_DELIVERY.stop()
 
 
 app = FastAPI(title="AutoClips AI Studio", version=APP_VERSION, docs_url=None, redoc_url=None, lifespan=lifespan)
 CONNECTION_VAULT = Vault(ROOT)
 STORAGE_DELIVERY = StorageDelivery(ROOT, CONNECTION_VAULT)
-studio_auth.DRIVE_CONNECT_HANDLER = lambda owner, token, identity: STORAGE_DELIVERY.connect_drive(owner, token, identity)
+LEGACY_STUDIO = sys.modules[__name__]
+
+
+def studio_state():
+    return account_workspaces.active.get() or LEGACY_STUDIO
+
+
+studio_auth.DRIVE_CONNECT_HANDLER = lambda owner, token, identity: studio_state().STORAGE_DELIVERY.connect_drive(owner, token, identity)
 FREE_MODELS_UPGRADE = migrate_free_defaults(CONNECTION_VAULT)
 FREE_CATALOG_REFRESH = refresh_saved_free_catalog(CONNECTION_VAULT)
 if FREE_MODELS_UPGRADE.get("migrated"):
@@ -97,8 +114,16 @@ if FREE_MODELS_UPGRADE.get("migrated"):
 if FREE_CATALOG_REFRESH.get("checked"):
     logging.getLogger("uvicorn.error").info("AI public-catalog upgrade: %s", FREE_CATALOG_REFRESH)
 app.include_router(studio_auth.router)
-app.include_router(build_router(CONNECTION_VAULT))
-app.include_router(build_suggestions_router(ROOT, CONNECTION_VAULT))
+app.include_router(public_accounts.router)
+app.include_router(build_router(CONNECTION_VAULT, resolve=lambda: studio_state().CONNECTION_VAULT))
+app.include_router(build_suggestions_router(ROOT, CONNECTION_VAULT, resolve=account_workspaces.active.get))
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request, exc):
+    if request.url.path.startswith('/login/email/'):
+        return JSONResponse({'detail': 'Confira os campos e o formato do código.'}, status_code=422)
+    return await request_validation_exception_handler(request, exc)
 
 
 def utcnow() -> str:
@@ -114,8 +139,8 @@ def read_json(path: Path, fallback):
         return fallback
 
 
-def _load_initial_tasks() -> dict[str, dict]:
-    saved = read_json(TASKS_FILE, {})
+def _load_initial_tasks(path=TASKS_FILE) -> dict[str, dict]:
+    saved = read_json(path, {})
     if not isinstance(saved, dict):
         return {}
     for t in saved.values():
@@ -127,17 +152,29 @@ def _load_initial_tasks() -> dict[str, dict]:
 
 
 TASKS: dict[str, dict] = _load_initial_tasks()
+ACCOUNTS = account_workspaces.Accounts(ROOT, _load_initial_tasks)
+# A mounted child of the legacy data root is also a valid archive source.
+# Keep the legacy catalog and its absolute file references in their original location.
+LEGACY_UPLOADS = UPLOADS
+expanded_volume = ACCOUNTS.volume()
+if expanded_volume and expanded_volume.parent == ROOT:
+    media_root = expanded_volume / 'legacy-media'
+    UPLOADS, MEDIA, RECORDINGS, DOWNLOADS = (media_root / name for name in
+        ('upload_sessions', 'videos', 'recordings', 'downloads'))
+    for folder in (UPLOADS, MEDIA, RECORDINGS, DOWNLOADS):
+        folder.mkdir(parents=True, exist_ok=True)
+STORAGE_DELIVERY.working_volume = MEDIA
 
 
 def _save_tasks() -> None:
-    items = sorted(TASKS.values(), key=lambda x: x.get("created_at", ""), reverse=True)[:100]
-    write_json(TASKS_FILE, {x["id"]: x for x in items})
+    items = sorted(studio_state().TASKS.values(), key=lambda x: x.get("created_at", ""), reverse=True)[:100]
+    write_json(studio_state().TASKS_FILE, {x["id"]: x for x in items})
 
 
 def cleanup_stale_uploads(max_age_seconds: int = 86400) -> int:
     removed = 0
     now = time.time()
-    for folder in list(UPLOADS.iterdir()):
+    for folder in list(studio_state().UPLOADS.iterdir()):
         if not folder.is_dir():
             continue
         try:
@@ -155,18 +192,41 @@ cleanup_stale_uploads()
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    async def authorized(owner):
+    async def authorized(owner, email=None):
+        workspace_token = None
+        if email and public_accounts.public_ready():
+            allowed = studio_auth.settings()["allowed"]
+            legacy = os.getenv("AUTOCLIPS_LEGACY_OWNER_EMAIL", "").strip().casefold()
+            if not legacy and len(allowed) == 1:
+                legacy = next(iter(allowed))
+            if email != legacy:
+                try:
+                    ws = await run_in_threadpool(ACCOUNTS.get, owner)
+                except OSError:
+                    return JSONResponse({"detail": "Volume do estúdio indisponível."}, status_code=503)
+                workspace_token = account_workspaces.active.set(ws)
         marker = REQUEST_OWNER.set(owner)
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            if email and public_accounts.public_ready() and not request.url.path.startswith('/static/'):
+                response.headers['Cache-Control'] = 'private, no-store'
+            if workspace_token is not None and request.method in {'POST', 'PATCH'} and response.status_code < 400:
+                if request.url.path.startswith('/api/storage/'):
+                    _wake_account_delivery()
+            return response
         finally:
             REQUEST_OWNER.reset(marker)
+            if workspace_token is not None:
+                account_workspaces.active.reset(workspace_token)
 
     address = request.client.host if request.client else ""
     is_loopback = address in {"127.0.0.1", "::1", "testclient", "localhost"}
     if request.url.path == "/health" and request.method == "GET":
         return await call_next(request)
-    if request.url.path in {"/login", "/login/google", "/login/google/callback"}:
+    if request.url.path in {"/login", "/login/google", "/login/email/signin", "/login/email/register",
+                            "/login/email/confirm", "/static/access.js", "/static/workspace.css", "/static/device.js"}:
+        return await call_next(request)
+    if request.url.path == "/login/google/callback" and not studio_auth.read_session(request):
         return await call_next(request)
     if studio_auth.configured():
         session = studio_auth.read_session(request)
@@ -174,9 +234,9 @@ async def basic_auth(request: Request, call_next):
             if request.method == "GET" and ("text/html" in request.headers.get("accept", "") or request.url.path == "/"):
                 return RedirectResponse(studio_auth.login_url(request.url.path), status_code=303)
             return JSONResponse({"detail": "Faça login com Google"}, status_code=401)
-        return await authorized(studio_auth.storage_owner(session['email']))
+        return await authorized(studio_auth.storage_owner(session['email']), session['email'])
     # Permit unconfigured development only on the local machine.
-    if is_loopback:
+    if is_loopback and not public_accounts.enabled():
         return await authorized('local')
     if request.url.path == "/logout":
         return RedirectResponse('/login', status_code=303)
@@ -192,7 +252,7 @@ def clean_filename(name: str) -> str:
 
 
 def catalog() -> dict:
-    return read_json(INDEX, {})
+    return read_json(studio_state().INDEX, {})
 
 
 def video_info(video_id: str) -> dict:
@@ -209,19 +269,19 @@ def save_video(item: dict):
     with LOCK:
         data = catalog()
         data[item["id"]] = item
-        write_json(INDEX, data)
+        write_json(studio_state().INDEX, data)
 
 
 def task_info(task_id: str):
     with LOCK:
-        return TASKS.get(task_id)
+        return studio_state().TASKS.get(task_id)
 
 
 def task_progress(progress: dict) -> None:
     """Expose useful stages to the UI without a write for every decoded word."""
     task_id = getattr(TASK_CONTEXT, "task_id", None)
     with LOCK:
-        task = TASKS.get(task_id)
+        task = studio_state().TASKS.get(task_id)
         if not task:
             return
         task.update({k: v for k, v in progress.items() if k in {"phase", "progress", "message"}})
@@ -232,8 +292,8 @@ def task_progress(progress: dict) -> None:
 
 
 def _bind_video_task(task_id: str, video_id: str) -> None:
-    TASKS[task_id]["video_id"] = video_id
-    PROCESSING_VIDEOS[video_id] = task_id
+    studio_state().TASKS[task_id]["video_id"] = video_id
+    studio_state().PROCESSING_VIDEOS[video_id] = task_id
 
 
 def schedule(kind: str, fn, *, video_id: str | None = None,
@@ -244,10 +304,10 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
 
     def release():
         bound_video = task.get("video_id")
-        if bound_video and PROCESSING_VIDEOS.get(bound_video) == task_id:
-            PROCESSING_VIDEOS.pop(bound_video)
-        if publish_key is not None and PENDING_PUBLISH.get(publish_key) == task_id:
-            PENDING_PUBLISH.pop(publish_key)
+        if bound_video and studio_state().PROCESSING_VIDEOS.get(bound_video) == task_id:
+            studio_state().PROCESSING_VIDEOS.pop(bound_video)
+        if publish_key is not None and studio_state().PENDING_PUBLISH.get(publish_key) == task_id:
+            studio_state().PENDING_PUBLISH.pop(publish_key)
 
     def do_work():
         TASK_CONTEXT.task_id = task_id
@@ -279,17 +339,17 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
                 _save_tasks()
 
     with LOCK:
-        TASKS[task_id] = task
+        studio_state().TASKS[task_id] = task
         if video_id is not None:
             _bind_video_task(task_id, video_id)
         if publish_key is not None:
-            PENDING_PUBLISH[publish_key] = task_id
+            studio_state().PENDING_PUBLISH[publish_key] = task_id
         try:
             _save_tasks()
-            POOL.submit(do_work)
+            POOL.submit(partial(copy_context().run, do_work))
         except Exception:
             release()
-            TASKS.pop(task_id)
+            studio_state().TASKS.pop(task_id)
             raise
     return task_id
 
@@ -297,7 +357,9 @@ def schedule(kind: str, fn, *, video_id: str | None = None,
 def get_session(upload_id: str) -> tuple[Path, dict]:
     if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
         raise HTTPException(status_code=404, detail="Sessao inexistente")
-    folder = UPLOADS / upload_id
+    folder = studio_state().UPLOADS / upload_id
+    if not folder.exists() and account_workspaces.active.get() is None:
+        folder = LEGACY_UPLOADS / upload_id
     info = read_json(folder / "session.json", None)
     if info is None:
         raise HTTPException(status_code=404, detail="Sessao inexistente")
@@ -393,7 +455,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js", "delivery.js", "delivery.css", "suggestions.js", "suggestions.css"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js", "delivery.js", "delivery.css", "suggestions.js", "suggestions.css", "workspace.css", "access.js", "device.js"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
@@ -417,11 +479,11 @@ def config():
         "face_detection_available": _face_detection_ready(),
         "layout_aspects": ["9:16", "16:9"],
         "layout_modes": ["standard", "split", "split_caption", "pip"],
-        "ai_titles_ready": get_selected(CONNECTION_VAULT, "titles") is not None,
+        "ai_titles_ready": get_selected(studio_state().CONNECTION_VAULT, "titles") is not None,
         "chunksize": CHUNK_SIZE,
         "upload_limit": None,
-        "storage_free_bytes": shutil.disk_usage(ROOT).free,
-        "directory": str(ROOT),
+        "storage_free_bytes": shutil.disk_usage(studio_state().MEDIA).free,
+        "directory": str(studio_state().ROOT),
     }
 
 
@@ -473,7 +535,7 @@ def _project_folder(video_id: str) -> Path:
     if not re.fullmatch(r"[0-9a-f]{32}", video_id):
         raise HTTPException(status_code=404, detail="Projeto nao encontrado")
     video_info(video_id)
-    return ROOT / "projects" / video_id
+    return studio_state().ROOT / "projects" / video_id
 
 
 def _timeline_document(video_id: str) -> tuple[dict, Path]:
@@ -582,13 +644,13 @@ def save_layout_settings(video_id: str, settings: LayoutSettings):
 @app.get("/api/layout-presets")
 def layout_presets():
     with LOCK:
-        return {"presets": builtin_presets(), "custom_presets": read_json(ROOT / "layout_presets.json", [])}
+        return {"presets": builtin_presets(), "custom_presets": read_json(studio_state().ROOT / "layout_presets.json", [])}
 
 
 @app.post("/api/layout-presets")
 def create_layout_preset(preset: LayoutPreset):
     with LOCK:
-        path = ROOT / "layout_presets.json"
+        path = studio_state().ROOT / "layout_presets.json"
         saved = read_json(path, [])
         if len(saved) >= 30:
             raise HTTPException(409, "Você já tem 30 modelos. Exclua um para salvar outro.")
@@ -604,7 +666,7 @@ def delete_layout_preset(preset_id: str):
     if not re.fullmatch(r"custom-[0-9a-f]{32}", preset_id):
         raise HTTPException(404, "Modelo personalizado não encontrado.")
     with LOCK:
-        path = ROOT / "layout_presets.json"
+        path = studio_state().ROOT / "layout_presets.json"
         saved = read_json(path, [])
         remaining = [item for item in saved if item.get("id") != preset_id]
         if len(remaining) == len(saved):
@@ -687,10 +749,10 @@ def _update_video(video_id: str, **changes) -> dict:
 def video_activity(video_id: str):
     with LOCK:
         video_info(video_id)
-        task_id = PROCESSING_VIDEOS.get(video_id)
+        task_id = studio_state().PROCESSING_VIDEOS.get(video_id)
         if not task_id:
-            task_id = next((pending for key, pending in PENDING_PUBLISH.items() if key[0] == video_id), None)
-        task = TASKS.get(task_id) if task_id else None
+            task_id = next((pending for key, pending in studio_state().PENDING_PUBLISH.items() if key[0] == video_id), None)
+        task = studio_state().TASKS.get(task_id) if task_id else None
         activity = None
         if task and task["status"] in {"queued", "running"}:
             activity = {"task_id": task_id, **{key: task[key] for key in
@@ -701,22 +763,22 @@ def video_activity(video_id: str):
 def _schedule_video(kind: str, video_id: str, fn, *, preflight=None) -> str:
     with LOCK:
         video_info(video_id)
-        if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
-                or any(key[0] == video_id for key in PENDING_PUBLISH)):
+        if (video_id in studio_state().PROCESSING_VIDEOS or any(key[0] == video_id for key in studio_state().RENDERING)
+                or any(key[0] == video_id for key in studio_state().PENDING_PUBLISH)):
             raise HTTPException(409, "Este vídeo está em processamento. Aguarde a tarefa terminar.")
         if preflight is not None:
             preflight()
         return schedule(kind, fn, video_id=video_id)
 
 
-def _require_render_space(quality: str, duration: float, *, timeline: bool = False) -> None:
+def _require_render_space(quality: str, duration: float, *, timeline: bool = False, directory=None) -> None:
     # CRF output depends on the footage. Estimate 3 Mb/s for 720p, 8 Mb/s for
     # 1080p and 160 kb/s for AAC, plus headroom for metadata and sidecars.
     # Timeline assembly briefly holds both the fragments and the joined file.
     video_bitrate = 3_000_000 if quality == "preview" else 8_000_000
     copies = 2 if timeline else 1
     estimate = 8 * 1024 * 1024 + math.ceil(max(.1, duration) * (video_bitrate + 160_000) * copies / 8)
-    free = shutil.disk_usage(ROOT).free
+    free = shutil.disk_usage(directory or studio_state().MEDIA).free
     if free < estimate:
         needed_mb = f"{estimate / 1_000_000:.1f}".replace(".", ",")
         free_mb = f"{free / 1_000_000:.1f}".replace(".", ",")
@@ -831,7 +893,7 @@ def get_video_transcript(video_id: str):
         data = _transcript_document(video_id)
         state = video_info(video_id).get("transcription", {})
         if isinstance(state, dict) and state.get("status") == "running":
-            task = TASKS.get(PROCESSING_VIDEOS.get(video_id), {})
+            task = studio_state().TASKS.get(studio_state().PROCESSING_VIDEOS.get(video_id), {})
             if (task.get("status") != "running"
                     or task.get("phase") not in {"waiting", "loading_model", "transcribing", "done"}):
                 state = {**state, "status": "error",
@@ -977,7 +1039,7 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
         duration = total_duration(doc_snapshot)
 
     def work():
-        _require_render_space(quality, duration, timeline=True)
+        _require_render_space(quality, duration, timeline=True, directory=folder_path.parent)
         meta = render_project(source, dest, doc_snapshot, words=words,
                               quality=quality, layout=req.layout, subtitles=req.subtitles,
                               subtitle_style=style, layout_config=composition)
@@ -1007,7 +1069,7 @@ def render_video_timeline(video_id: str, quality: str, req: TimelineRenderReques
         return result
 
     return {"task_id": _schedule_video("timeline-" + quality, video_id, work,
-                                       preflight=lambda: _require_render_space(quality, duration, timeline=True))}
+                                       preflight=lambda: _require_render_space(quality, duration, timeline=True, directory=folder_path.parent))}
 
 
 @app.get("/api/videos/{video_id}/timeline/rendered/{quality}")
@@ -1027,7 +1089,7 @@ def view_timeline_export(video_id: str, quality: str, request: Request, render_i
 @app.post("/api/maintenance/cleanup")
 def maintenance_cleanup():
     removed = cleanup_stale_uploads(max_age_seconds=3600)
-    return {"ok": True, "removed_stale_uploads": removed, "storage_free_bytes": shutil.disk_usage(ROOT).free}
+    return {"ok": True, "removed_stale_uploads": removed, "storage_free_bytes": shutil.disk_usage(studio_state().MEDIA).free}
 
 
 @app.post("/api/upload/start")
@@ -1037,13 +1099,13 @@ def upload_start(req: UploadStart):
     safe = clean_filename(req.filename)
     if Path(safe).suffix.lower() not in MEDIA_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Formato nao suportado")
-    free = shutil.disk_usage(ROOT).free
+    free = shutil.disk_usage(studio_state().MEDIA).free
     # Keep space for the project JSON, thumbnails and at least one render.
     reserve = max(8 * 1024 * 1024, min(64 * 1024 * 1024, free // 5))
     if req.size > max(0, free - reserve):
         raise HTTPException(status_code=413, detail="Espaco insuficiente para o video e sua edicao. Libere espaco ou use um volume maior.")
     upload_id = uuid.uuid4().hex
-    folder = UPLOADS / upload_id
+    folder = studio_state().UPLOADS / upload_id
     folder.mkdir()
     (folder / "video.part").touch()
     state = {"id": upload_id, "filename": safe, "size": req.size,
@@ -1108,7 +1170,8 @@ def upload_complete(upload_id: str):
         if not source.exists() or source.stat().st_size != session["size"]:
             raise HTTPException(status_code=409, detail="Tamanho final inconsistente")
         vid = uuid.uuid4().hex
-        dest = MEDIA / f"{vid}_{session['filename']}"
+        media_dir = folder.parent.parent / 'videos'
+        dest = media_dir / f"{vid}_{session['filename']}"
         source.replace(dest)
         folder.joinpath("session.json").unlink(missing_ok=True)
         folder.rmdir()
@@ -1117,7 +1180,7 @@ def upload_complete(upload_id: str):
     except Exception as exc:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=f"Arquivo de video nao abriu: {exc}")
-    thumb = MEDIA / f"{vid}.jpg"
+    thumb = dest.parent / f"{vid}.jpg"
     try:
         create_thumbnail(dest, thumb)
     except Exception:
@@ -1149,10 +1212,10 @@ def import_vod(req: VodDownloadRequest):
             raise HTTPException(status_code=400, detail="Instale faster-whisper para transcrever") from exc
 
     def job():
-        downloaded = download_vod(req.url.strip(), DOWNLOADS)
+        downloaded = download_vod(req.url.strip(), studio_state().DOWNLOADS)
         meta = probe(downloaded)
         vid = uuid.uuid4().hex
-        thumb = DOWNLOADS / f"{vid}.jpg"
+        thumb = studio_state().DOWNLOADS / f"{vid}.jpg"
         try:
             create_thumbnail(downloaded, thumb)
         except Exception:
@@ -1197,14 +1260,14 @@ def list_videos():
 @app.delete("/api/videos/{video_id}")
 def delete_video(video_id: str):
     with LOCK:
-        if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
-                or any(key[0] == video_id for key in PENDING_PUBLISH)):
+        if (video_id in studio_state().PROCESSING_VIDEOS or any(key[0] == video_id for key in studio_state().RENDERING)
+                or any(key[0] == video_id for key in studio_state().PENDING_PUBLISH)):
             raise HTTPException(409, "Aguarde o processamento ou envio terminar antes de excluir o projeto.")
         data = catalog()
         item = data.pop(video_id, None)
         if not item:
             raise HTTPException(status_code=404, detail="Video nao encontrado")
-        write_json(INDEX, data)
+        write_json(studio_state().INDEX, data)
     for key in ("path", "thumbnail"):
         p = item.get(key)
         if p:
@@ -1212,7 +1275,7 @@ def delete_video(video_id: str):
     if item.get("job_path"):
         shutil.rmtree(item["job_path"], ignore_errors=True)
     if re.fullmatch(r"[0-9a-f]{32}", video_id):
-        shutil.rmtree(ROOT / "projects" / video_id, ignore_errors=True)
+        shutil.rmtree(studio_state().ROOT / "projects" / video_id, ignore_errors=True)
     return {"ok": True}
 
 
@@ -1244,7 +1307,7 @@ def analyze_video(video_id: str, req: AnalyzeRequest):
             raise HTTPException(400, "Autorize o envio de trechos de transcricao ao provedor de IA")
         if not req.transcribe:
             raise HTTPException(400, "Habilite a transcricao antes de usar IA na nuvem")
-        selected = get_selected(CONNECTION_VAULT, "moments")
+        selected = get_selected(studio_state().CONNECTION_VAULT, "moments")
         if not selected:
             raise HTTPException(400, "Selecione um modelo para momentos na aba Conexoes")
     source = Path(item["path"])
@@ -1335,7 +1398,7 @@ def update_clips(video_id: str, req: UpdateClips):
         known = {c["id"]: c for c in manifest["clips"]}
         if set(x.id for x in req.clips) != set(known):
             raise HTTPException(status_code=400, detail="Envie todos os clipes existentes")
-        if any((video_id, c.id) in PENDING_PUBLISH for c in req.clips):
+        if any((video_id, c.id) in studio_state().PENDING_PUBLISH for c in req.clips):
             raise HTTPException(status_code=409, detail="Aguarde o envio ao YouTube terminar antes de editar")
         duration = manifest["probe"]["duration"]
         stale_renders = []
@@ -1370,9 +1433,9 @@ def update_clips(video_id: str, req: UpdateClips):
 @app.delete("/api/videos/{video_id}/clips/{clip_id}")
 def delete_clip(video_id: str, clip_id: str):
     with LOCK:
-        if video_id in PROCESSING_VIDEOS:
+        if video_id in studio_state().PROCESSING_VIDEOS:
             raise HTTPException(409, "Aguarde o processamento terminar antes de remover este corte.")
-        if (video_id, clip_id) in PENDING_PUBLISH:
+        if (video_id, clip_id) in studio_state().PENDING_PUBLISH:
             raise HTTPException(status_code=409, detail="Aguarde o envio ao YouTube terminar antes de remover")
         manifest, work, _ = get_manifest(video_id)
         idx = next((i for i, c in enumerate(manifest["clips"]) if c["id"] == clip_id), None)
@@ -1402,7 +1465,7 @@ def ai_clip_metadata(video_id: str, clip_id: str):
             words = read_json(work / "transcript.json", {"words": []}).get("words", [])
             excerpt = " ".join(w["text"] for w in words if clip["start"] <= w["start"] <= clip["end"])
     try:
-        meta = generate_clip_metadata(CONNECTION_VAULT, excerpt, clip.get("title", ""))
+        meta = generate_clip_metadata(studio_state().CONNECTION_VAULT, excerpt, clip.get("title", ""))
     except ModelRequestError as exc:
         raise HTTPException(exc.status_code, str(exc),
                             headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None) from None
@@ -1424,7 +1487,7 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
     if not req.approved_publish:
         raise HTTPException(status_code=400, detail="Marque a confirmacao explicita antes de publicar no YouTube")
     with LOCK:
-        if video_id in PROCESSING_VIDEOS:
+        if video_id in studio_state().PROCESSING_VIDEOS:
             raise HTTPException(409, "Aguarde o processamento deste vídeo antes de enviar ao YouTube.")
         manifest, _, _ = get_manifest(video_id)
         clip = next((c for c in manifest["clips"] if c["id"] == clip_id), None)
@@ -1433,7 +1496,7 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
         if clip.get("youtube", {}).get("youtube_video_id"):
             raise HTTPException(status_code=409, detail="Clipe ja enviado ao YouTube; edite e renderize uma nova versao para publicar outro video")
         publish_key = (video_id, clip_id)
-        if publish_key in PENDING_PUBLISH:
+        if publish_key in studio_state().PENDING_PUBLISH:
             raise HTTPException(status_code=409, detail="Ja existe um envio em andamento para este clipe")
         final_info = clip.get("final")
         if not isinstance(final_info, dict) or not final_info.get("path"):
@@ -1449,7 +1512,7 @@ def publish_clip_youtube(video_id: str, clip_id: str, req: PublishYouTubeRequest
                       if not final_path.is_file() and archived else nullcontext(final_path))
             with source as publish_path:
                 res = upload_youtube_video(
-                    CONNECTION_VAULT,
+                    studio_state().CONNECTION_VAULT,
                     publish_path,
                     title=title,
                     description=desc,
@@ -1498,7 +1561,7 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
             raise ValueError("O original foi alterado; analise novamente")
         has_audio = bool(manifest["probe"]["audio_codec"])
         words = _transcript_document(video_id).get("words", [])
-    _require_render_space(quality, clip["end"] - clip["start"])
+    _require_render_space(quality, clip["end"] - clip["start"], directory=work)
     folder = work / quality
     folder.mkdir(parents=True, exist_ok=True)
     render_id = uuid.uuid4().hex[:12]
@@ -1555,7 +1618,7 @@ def render_one(video_id: str, clip_id: str, quality: str, layout: str, burn: boo
 
 @app.post("/api/videos/{video_id}/render/{quality}")
 def request_render(video_id: str, quality: str, req: RenderRequest):
-    manifest, _, _ = get_manifest(video_id)
+    manifest, work, _ = get_manifest(video_id)
     if quality not in {"preview", "final"} or req.layout not in {"blur", "crop", "fit"}:
         raise HTTPException(status_code=400, detail="Formato invalido")
     if not re.fullmatch(r"clip_[0-9a-z_]+", req.clip_id) or req.clip_id not in {c["id"] for c in manifest["clips"]}:
@@ -1577,7 +1640,7 @@ def request_render(video_id: str, quality: str, req: RenderRequest):
     return {"task_id": _schedule_video("render-" + quality, video_id,
                 lambda: render_one(video_id, req.clip_id, quality, req.layout, req.subtitles, style,
                                    composition, req.approved_preview_id),
-                preflight=lambda: _require_render_space(quality, clip["end"] - clip["start"]))}
+                preflight=lambda: _require_render_space(quality, clip["end"] - clip["start"], directory=work))}
 
 
 @app.get("/api/videos/{video_id}/rendered/{clip_id}/{quality}")
@@ -1622,7 +1685,7 @@ def watch_live(live_id: str, proc, target: Path, logs):
     code = proc.wait()
     logs.close()
     with LOCK:
-        info = LIVE[live_id]
+        info = studio_state().LIVE[live_id]
         info["exit_code"] = code
         info["status"] = "saving"
         info["bytes"] = target.stat().st_size if target.exists() else 0
@@ -1657,7 +1720,7 @@ def watch_live(live_id: str, proc, target: Path, logs):
             "platform": info["platform"], "created_at": utcnow(),
             "size": result.stat().st_size, "duration": metadata["duration"],
             "width": metadata["width"], "height": metadata["height"], "thumbnail": None}
-    thumb = RECORDINGS / f"{vid}.jpg"
+    thumb = studio_state().RECORDINGS / f"{vid}.jpg"
     try:
         create_thumbnail(result, thumb)
         item["thumbnail"] = str(thumb)
@@ -1690,15 +1753,15 @@ def monitor_live_storage(live_id: str, proc) -> None:
             # MP4 packaging briefly needs a second copy of every active TS.
             # Reserve that space before the recorder consumes it.
             pending_bytes = 0
-            for record in LIVE.values():
+            for record in studio_state().LIVE.values():
                 if record.get("status") in {"starting", "recording", "stopping", "saving"}:
                     try:
                         pending_bytes += record["target"].stat().st_size
                     except FileNotFoundError:
                         pass
-        if shutil.disk_usage(RECORDINGS).free < pending_bytes + 64 * 1024 * 1024:
+        if shutil.disk_usage(studio_state().RECORDINGS).free < pending_bytes + 64 * 1024 * 1024:
             with LOCK:
-                info = LIVE.get(live_id)
+                info = studio_state().LIVE.get(live_id)
                 if info:
                     info["message"] = "Gravação encerrada para reservar espaço ao salvamento. Libere espaço antes de gravar novamente."
                     info["status"] = "stopping"
@@ -1719,7 +1782,7 @@ def start_live(req: LiveStart):
         raise HTTPException(status_code=503, detail="Streamlink nao instalado no computador servidor")
     if not shutil.which("ffmpeg"):
         raise HTTPException(503, "O servidor precisa do FFmpeg para gravar e mostrar a prévia.")
-    if shutil.disk_usage(RECORDINGS).free < 80 * 1024 * 1024:
+    if shutil.disk_usage(studio_state().RECORDINGS).free < 80 * 1024 * 1024:
         raise HTTPException(507, "Há pouco espaço para gravar. Libere espaço na biblioteca e tente novamente.")
     if req.transcribe_after:
         try:
@@ -1727,11 +1790,11 @@ def start_live(req: LiveStart):
         except ImportError as exc:
             raise HTTPException(status_code=400, detail="Instale faster-whisper para transcrever a live") from exc
     live_id = uuid.uuid4().hex
-    target = RECORDINGS / f"live_{plat}_{live_id}.ts"
-    logpath = RECORDINGS / f"live_{plat}_{live_id}.log"
+    target = studio_state().RECORDINGS / f"live_{plat}_{live_id}.ts"
+    logpath = studio_state().RECORDINGS / f"live_{plat}_{live_id}.log"
     with LOCK:
         if any(record.get("url") == req.url and record.get("status") in
-               {"starting", "recording", "stopping"} for record in LIVE.values()):
+               {"starting", "recording", "stopping"} for record in studio_state().LIVE.values()):
             raise HTTPException(409, "Esta live ja esta sendo gravada; acompanhe em Lives")
         loghandle = logpath.open("w", encoding="utf-8")
         try:
@@ -1739,15 +1802,15 @@ def start_live(req: LiveStart):
         except OSError as exc:
             loghandle.close()
             raise HTTPException(502, "Falha ao iniciar o gravador Streamlink") from exc
-        LIVE[live_id] = {"id": live_id, "platform": plat, "url": req.url,
+        studio_state().LIVE[live_id] = {"id": live_id, "platform": plat, "url": req.url,
                          "_delivery_owner": REQUEST_OWNER.get(),
                          "status": "starting", "created_at": utcnow(), "process": proc,
                          "target": target, "logpath": logpath,
                          "analyze_after": req.analyze_after,
                          "transcribe_after": req.transcribe_after,
                          "auto_preview": req.auto_preview}
-    threading.Thread(target=watch_live, args=(live_id, proc, target, loghandle), daemon=True).start()
-    threading.Thread(target=monitor_live_storage, args=(live_id, proc), daemon=True).start()
+    threading.Thread(target=copy_context().run, args=(watch_live, live_id, proc, target, loghandle), daemon=True).start()
+    threading.Thread(target=copy_context().run, args=(monitor_live_storage, live_id, proc), daemon=True).start()
     return {"id": live_id, "platform": plat, "status": "starting"}
 
 
@@ -1788,7 +1851,7 @@ def import_source_auto(req: AutoSourceRequest):
 @app.post("/api/live/{live_id}/stop")
 def stop_live(live_id: str):
     with LOCK:
-        info = LIVE.get(live_id)
+        info = studio_state().LIVE.get(live_id)
         if not info:
             raise HTTPException(status_code=404, detail="Gravacao nao encontrada")
         process = info["process"]
@@ -1802,13 +1865,13 @@ def stop_live(live_id: str):
 def list_lives():
     with LOCK:
         result = []
-        for live_id, info in LIVE.items():
+        for live_id, info in studio_state().LIVE.items():
             recorded = info["target"].stat().st_size if info["target"].exists() else 0
             state = info["status"]
             if state == "starting" and recorded > 0:
                 state = "recording"
             preview = preview_status(preview_directory(info["target"]))
-            analysis = TASKS.get(info.get("analysis_task_id"), {})
+            analysis = studio_state().TASKS.get(info.get("analysis_task_id"), {})
             if state == "completed" and analysis.get("status") in {"queued", "running"}:
                 state = "processing"
             result.append({"id": live_id, "platform": info["platform"], "url": info["url"],
@@ -1830,7 +1893,7 @@ def list_lives():
 @app.get("/api/live/{live_id}/preview/{asset}")
 def live_preview_asset(live_id: str, asset: str):
     with LOCK:
-        info = LIVE.get(live_id)
+        info = studio_state().LIVE.get(live_id)
         if not info:
             raise HTTPException(404, "Gravação não encontrada.")
         path = resolve_preview_asset(preview_directory(info["target"]), asset)
@@ -1898,7 +1961,7 @@ def _shared_export_path(job):
                         if shared(clip.get(quality), (video_id, 'clip', clip.get('id'), quality)):
                             return True
         if re.fullmatch(r'[0-9a-f]{32}', video_id):
-            records_path = ROOT / 'projects' / video_id / 'timeline_exports.json'
+            records_path = studio_state().ROOT / 'projects' / video_id / 'timeline_exports.json'
             records = read_json(records_path, None)
             if records_path.exists() and not isinstance(records, dict):
                 return True
@@ -1914,8 +1977,8 @@ def _archive_guard(job):
     """Serialize removal with edits, publishes and opening a download handle."""
     with LOCK:
         video_id = job['video_id']
-        busy = (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
-                or any(key[0] == video_id for key in PENDING_PUBLISH))
+        busy = (video_id in studio_state().PROCESSING_VIDEOS or any(key[0] == video_id for key in studio_state().RENDERING)
+                or any(key[0] == video_id for key in studio_state().PENDING_PUBLISH))
         source_path = job.get('source_path')
         # Existing imported projects may reuse paths. An export declaration
         # must never make a recording or a preview eligible for removal.
@@ -1943,17 +2006,24 @@ def _archive_guard(job):
             # A replaced export is still available at its Drive link, but is
             # no longer the current project file. Do not repeatedly attempt to
             # remove a protected path or present it as pending forever.
-            current = STORAGE_DELIVERY.jobs.get(job['id'])
-            if current:
-                STORAGE_DELIVERY._update(current, archive_requested=False,
+            record = studio_state().STORAGE_DELIVERY.jobs.get(job['id'])
+            if record:
+                studio_state().STORAGE_DELIVERY._update(record, archive_requested=False,
                     archive_error='A cópia no Drive foi preservada. Este arquivo não é um final atual exclusivo; a liberação local foi cancelada.')
         yield valid and not busy and not protected
 
 
+def _wake_account_delivery():
+    if account_workspaces.active.get():
+        owner = REQUEST_OWNER.get() or getattr(TASK_CONTEXT, 'delivery_owner', None)
+        if owner:
+            ACCOUNTS.mark_pending(owner)
+
+
 def _storage_service():
     # Late binding also keeps test/reload service replacements isolated.
-    STORAGE_DELIVERY.archiver.guard = _archive_guard
-    return STORAGE_DELIVERY
+    studio_state().STORAGE_DELIVERY.archiver.guard = _archive_guard
+    return studio_state().STORAGE_DELIVERY
 
 
 def _archived_export(video_id, kind, quality, meta, clip_id=None, *, owner=None):
@@ -1994,6 +2064,7 @@ def _deliver_render(result, path):
         return
     try:
         job = _storage_service().enqueue(owner, {**result, 'path': str(path)}, automatic=True)
+        _wake_account_delivery()
         if job:
             result['delivery_job'] = job
     except DeliveryError as exc:
@@ -2021,7 +2092,7 @@ def _enqueue_export(owner, video_id, req):
                 raise HTTPException(409, 'A transcrição mudou. Gere uma nova prévia antes de enviar.')
         archived = _archived_export(video_id, req.kind, req.quality, meta, req.clip_id, owner=owner)
         if archived and req.provider == 'drive' and archived['render_id'] == req.render_id:
-            return STORAGE_DELIVERY._public_job(archived)
+            return studio_state().STORAGE_DELIVERY._public_job(archived)
         if archived and not Path(meta.get('path', '')).is_file():
             raise HTTPException(409, 'Este final está arquivado no Drive. Para enviar a outro destino, gere uma nova exportação local; o download atual continua disponível.')
         if not meta or not Path(meta.get('path', '')).is_file():
@@ -2032,7 +2103,7 @@ def _enqueue_export(owner, video_id, req):
         # identity before enabling removal so old download URLs keep working.
         if (req.quality == 'final' and req.provider == 'drive'
                 and (not meta.get('render_id') or str(meta['render_id']).startswith('legacy-'))
-                and STORAGE_DELIVERY.public_settings(owner)['archive_after_upload']):
+                and studio_state().STORAGE_DELIVERY.public_settings(owner)['archive_after_upload']):
             meta['render_id'] = req.render_id
             if req.kind == 'timeline':
                 records_file = _project_folder(video_id) / 'timeline_exports.json'
@@ -2042,7 +2113,9 @@ def _enqueue_export(owner, video_id, req):
             else:
                 write_json(work / 'manifest.json', manifest)
         artifact = _artifact_result(video_id, req.kind, req.quality, req.render_id, req.clip_id, title)
-        return _storage_service().enqueue(owner, {**artifact, 'path': meta['path']}, provider=req.provider)
+        job = _storage_service().enqueue(owner, {**artifact, 'path': meta['path']}, provider=req.provider)
+        _wake_account_delivery()
+        return job
 
 
 def _optimize_drive(owner):
@@ -2061,8 +2134,8 @@ def _optimize_drive(owner):
     skipped_busy = 0
     with LOCK:
         for video_id in catalog():
-            if (video_id in PROCESSING_VIDEOS or any(key[0] == video_id for key in RENDERING)
-                    or any(key[0] == video_id for key in PENDING_PUBLISH)):
+            if (video_id in studio_state().PROCESSING_VIDEOS or any(key[0] == video_id for key in studio_state().RENDERING)
+                    or any(key[0] == video_id for key in studio_state().PENDING_PUBLISH)):
                 skipped_busy += 1
                 continue
             try:

@@ -124,7 +124,7 @@ def _drive_capacity(service, owner):
 
 def capacity_report(service, owner):
     """Return a fresh, owner-scoped report without changing storage policies."""
-    disk = shutil.disk_usage(service.root)
+    disk = shutil.disk_usage(getattr(service, 'working_volume', service.root))
     return {
         "local": {
             "total_bytes": disk.total,
