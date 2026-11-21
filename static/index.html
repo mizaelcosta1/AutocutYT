@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
-  <title>AutoClips AI Studio v0.8.2</title>
+  <title>AutoClips AI Studio v0.8.3</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/layout-editor.css">
   <link rel="stylesheet" href="/static/delivery.css">
+  <link rel="stylesheet" href="/static/suggestions.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
@@ -17,16 +18,17 @@
     <div class="side-label">SEU ESTÚDIO</div>
     <button class="nav active" data-tab="sources"><span aria-hidden="true">◭</span> Novo projeto</button>
     <button class="nav" data-tab="library"><span aria-hidden="true">□</span> Biblioteca</button>
+    <button class="nav" data-tab="suggestions"><span aria-hidden="true">⚡</span> Sugestões</button>
     <button class="nav" data-tab="editor"><span aria-hidden="true">✂</span> Editor de clipes</button>
     <button class="nav" data-tab="connections"><span aria-hidden="true">◎</span> Conexões e modelos</button>
     <div class="side-spacer"></div>
     <div class="side-info"><div class="storage-dot" aria-hidden="true"></div><div><b>Armazenamento</b><p id="storage-info">Consultando espaço disponível...</p></div></div>
-    <div class="sidebar-foot">AutoClips Studio · v0.8.2<br><a href="/logout">Sair da conta</a></div>
+    <div class="sidebar-foot">AutoClips Studio · v0.8.3<br><a href="/logout">Sair da conta</a></div>
   </aside>
   <div class="main-wrap">
     <header class="topbar">
       <div class="mobile-brand"><span aria-hidden="true">▶</span> <b>AutoClips AI</b></div>
-      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.8.2</span>
+      <span class="eyebrow">SEU ESTÚDIO DE CORTES · v0.8.3</span>
       <div class="platforms" aria-label="Plataformas compatíveis"><span class="pill"><i class="dot tw" aria-hidden="true"></i>Twitch</span><span class="pill"><i class="dot yt" aria-hidden="true"></i>YouTube</span><span class="pill"><i class="dot kick" aria-hidden="true"></i>Kick</span></div>
     </header>
     <main id="main-content" tabindex="-1">
@@ -77,6 +79,66 @@
       <section id="library" class="page" aria-labelledby="library-title">
         <div class="section-heading"><div><span class="overline">SEUS PROJETOS</span><h1 id="library-title">Biblioteca</h1><p>Escolha um vídeo para cortar, transcrever ou continuar a edição.</p></div><div class="btn-row"><button class="outline" id="cleanup-storage" type="button">Limpar temporários</button><button class="outline" id="refresh-library" type="button">Atualizar</button></div></div>
         <div id="video-library" class="video-grid"></div>
+      </section>
+
+
+      <section id="suggestions" class="page" aria-labelledby="suggestions-title">
+        <div class="section-heading tr-head">
+          <div><span class="overline">OPORTUNIDADES PARA NOVOS CORTES</span>
+            <h1 id="suggestions-title">Sugestões do dia e da semana</h1>
+            <p>Descubra quais criadores e temas estão recebendo atenção. Consulte as fontes e veja uma prévia de thumbnail antes de escolher a pauta.</p>
+          </div>
+          <div class="tr-switch" role="group" aria-label="Janela de tendências">
+            <button class="active" type="button" data-trend-period="daily" aria-pressed="true">Hoje</button>
+            <button type="button" data-trend-period="weekly" aria-pressed="false">7 dias</button>
+          </div>
+        </div>
+        <div class="tr-controls">
+          <label for="suggestions-platform">PLATAFORMA
+            <select id="suggestions-platform"><option value="all">Todas as fontes</option><option value="twitch">Twitch</option><option value="youtube">YouTube</option></select>
+          </label>
+          <button type="button" class="outline" id="suggestions-refresh">Atualizar tendências</button>
+        </div>
+        <div class="tr-summary" role="status" aria-live="polite">
+          <strong id="suggestions-coverage">Consultando tendências...</strong>
+          <small id="suggestions-updated"></small>
+        </div>
+        <p id="suggestions-status" class="tr-hint" role="status" aria-live="polite">Abra esta aba para consultar os sinais públicos.</p>
+        <p id="suggestions-week-note" hidden></p>
+        <section class="tr-section" aria-label="Temas e jogos em alta">
+          <div class="tr-section-title"><h2>Temas e jogos mais hypados</h2><p>Jogos das lives em português — audiência da amostra</p></div>
+          <div class="tr-results" id="suggestions-topics"></div>
+        </section>
+        <section class="tr-section" aria-label="Criadores em destaque">
+          <div class="tr-section-title"><h2>Streamers e criadores em alta</h2><p>Audiência ao vivo na Twitch ou posição do vídeo no ranking YouTube</p></div>
+          <div class="tr-results" id="suggestions-streamers"></div>
+        </section>
+        <section class="tr-section" aria-label="Vídeos populares para estudar formatos">
+          <div class="tr-section-title"><h2>Vídeos e thumbnails de referência</h2><p>Veja as capas originais ampliadas e experimente seu próprio texto de thumbnail</p></div>
+          <div class="tr-results" id="suggestions-videos"></div>
+        </section>
+        <section id="suggestions-sources" class="tr-source-panel" aria-label="Fontes de métricas"></section>
+        <p id="suggestions-method" class="tr-hint"></p>
+        <p class="tr-legal">Oportunidades são sinais de audiência, não previsão de viralização. Só importe, grave ou reutilize vídeos com autorização. Analise os formatos e produza conteúdo original.</p>
+        <button class="outline" type="button" data-trends-open-connections>Ver conexões das plataformas</button>
+        <dialog id="suggestion-thumbnail-dialog" aria-labelledby="suggestions-preview-title">
+          <div class="tr-dialog-inner">
+            <div class="tr-dialog-head"><h2 id="suggestions-preview-title">Prévia da thumbnail</h2><button type="button" class="outline" id="suggestions-preview-close" aria-label="Fechar prévia">✕</button></div>
+            <div class="tr-cover-stage">
+              <img id="suggestions-preview-image" alt="Thumbnail original para referência">
+              <span id="suggestions-cover-overlay" class="tr-cover-overlay"></span>
+            </div>
+            <p id="suggestions-preview-caption"></p>
+            <div class="tr-cover-controls">
+              <label for="suggestions-cover-text">TEXTO DA SUA IDEIA DE THUMBNAIL
+                <input type="text" id="suggestions-cover-text" maxlength="62" placeholder="Escreva um gancho para testar a capa">
+              </label>
+              <button class="outline" type="button" id="suggestions-copy-title">Copiar texto</button>
+            </div>
+            <p class="tr-dialog-note">Simulação no navegador sobre uma imagem pública de referência. Não cria, salva nem concede direitos sobre a thumbnail original.</p>
+            <div class="tr-dialog-actions"><span id="suggestions-preview-platform" class="tr-platform"></span><a id="suggestions-preview-source" target="_blank" rel="noopener noreferrer">Ver conteúdo original ↗</a></div>
+          </div>
+        </dialog>
       </section>
 
       <section id="editor" class="page" aria-labelledby="editor-title">
@@ -185,7 +247,7 @@
     </main>
   </div>
 </div>
-<nav class="mobile-tabs" aria-label="Navegação do estúdio"><button data-tab="sources" class="active"><span aria-hidden="true">↥</span><span>Início</span></button><button data-tab="library"><span aria-hidden="true">□</span><span>Biblioteca</span></button><button data-tab="editor"><span aria-hidden="true">✂</span><span>Editor</span></button><button data-tab="connections"><span aria-hidden="true">◎</span><span>Conexões</span></button></nav>
+<nav class="mobile-tabs" aria-label="Navegação do estúdio"><button data-tab="sources" class="active"><span aria-hidden="true">↥</span><span>Início</span></button><button data-tab="library"><span aria-hidden="true">□</span><span>Biblioteca</span></button><button data-tab="suggestions"><span aria-hidden="true">⚡</span><span>Sugestões</span></button><button data-tab="editor"><span aria-hidden="true">✂</span><span>Editor</span></button><button data-tab="connections"><span aria-hidden="true">◎</span><span>Conexões</span></button></nav>
 <script src="/static/hls.min.js"></script>
 <script src="/static/live-preview.js"></script>
 <script src="/static/video-activity.js"></script>
@@ -193,5 +255,6 @@
 <script src="/static/delivery.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/connections.js"></script>
+<script src="/static/suggestions.js"></script>
 </body>
 </html>

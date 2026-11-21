@@ -48,8 +48,9 @@ from storage_delivery import StorageDelivery, DeliveryError
 from storage_routes import build_storage_router, DeliveryRequest
 from storage_capacity import capacity_report
 from storage_archive import local_response
+from trend_suggestions import build_router as build_suggestions_router
 
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 ROOT = Path(os.environ.get("AUTOCLIPS_DATA_ROOT", str(Path.home() / "AutoClipsStudioData"))).expanduser().resolve()
 UPLOADS = ROOT / "upload_sessions"
 MEDIA = ROOT / "videos"
@@ -97,6 +98,7 @@ if FREE_CATALOG_REFRESH.get("checked"):
     logging.getLogger("uvicorn.error").info("AI public-catalog upgrade: %s", FREE_CATALOG_REFRESH)
 app.include_router(studio_auth.router)
 app.include_router(build_router(CONNECTION_VAULT))
+app.include_router(build_suggestions_router(ROOT, CONNECTION_VAULT))
 
 
 def utcnow() -> str:
@@ -391,7 +393,7 @@ def home():
 
 @app.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js", "delivery.js", "delivery.css"}:
+    if name not in {"app.css", "app.js", "connections.js", "timeline.css", "timeline.js", "hls.min.js", "hls.LICENSE.txt", "live-preview.js", "layout-editor.js", "layout-editor.css", "video-activity.js", "delivery.js", "delivery.css", "suggestions.js", "suggestions.css"}:
         raise HTTPException(status_code=404)
     return FileResponse(Path(__file__).parent / "static" / name, headers={"Cache-Control": "no-cache"})
 
